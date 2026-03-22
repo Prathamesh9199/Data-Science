@@ -1,0 +1,52 @@
+# ==========================================
+# SLM Project-Specific .gitignore
+# ==========================================
+
+# 1. Model Weights & Exports
+# Ignores final and intermediate model binaries
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.gguf
+*.onnx
+
+# 2. Training Checkpoints
+# Ignores heavy optimizer states and epoch saves
+/checkpoints/
+/batches/
+/base_models/
+/ckpt/
+/runs/
+epoch_*.pt
+step_*.pt
+
+# 3. Datasets & Tokenizer Corpora
+# Ignores large text files, arrow caches, and raw training data
+*.jsonl
+*.parquet
+*.arrow
+/corpus/
+/raw_data/
+/tokenized_data/
+/data/
+/plan/
+
+# 4. Hugging Face & Framework Caches
+# Ignores local downloads if you use HF datasets or base models
+.cache/
+hf_cache/
+.huggingface/
+
+# 5. Logging & Metrics
+# Ignores experiment tracking directories
+/wandb/
+/tb_logs/
+/tensorboard/
+/mlruns/
+
+# 6. Profiling & Debugging
+# Ignores memory profiling or CUDA tracing outputs
+*.nsys-rep
+*.sqlite
+/profiler_logs/

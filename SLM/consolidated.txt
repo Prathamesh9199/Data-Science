@@ -1,0 +1,1159 @@
+<<rms_norm.py>>
+import torch
+import torch.nn as nn
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        # A learnable scaling parameter, initialized to 1s
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        # Calculate the root mean square and normalize the input
+        # torch.rsqrt is the reciprocal square root (1 / sqrt(x))
+        norm = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        
+        # Scale by the learnable weight
+        return (norm * self.weight).to(x.dtype)
+    
+if __name__ == "__main__":
+    # 1. Initialize with dim=5 because our vector has 5 elements
+    rms = RMSNorm(dim=5)
+    
+    # 2. Convert the Python list to a PyTorch float tensor
+    x = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
+    
+    # 3. Run the forward pass
+    output = rms(x)
+    
+    print("Input: ", x)
+    print("Output:", output)
+========================
+<<check_env.py>>
+import torch
+import flash_attn
+
+print("=== Environment Check ===")
+print(f"PyTorch Version: {torch.__version__}")
+print(f"CUDA Available:  {torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    print(f"Device Name:     {torch.cuda.get_device_name(0)}")
+    print(f"CUDA Capability: {torch.cuda.get_device_capability(0)}")
+print(f"Flash-Attn:      {flash_attn.__version__}")
+========================
+<<verify_params.py>>
+from model_architecture import CustomTransformer
+from config import SLMConfig
+
+def count_parameters(model):
+    # Sum up all parameters that require a gradient
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+if __name__ == "__main__":
+    # 1. Load your standard configuration
+    cfg = SLMConfig()
+    
+    # 2. Initialize the full 24-layer model
+    print(f"Initializing CustomTransformer with {cfg.n_layers} layers...")
+    model = CustomTransformer(cfg)
+    
+    # 3. Calculate total params
+    total_params = count_parameters(model)
+    
+    print("\n--- Parameter Tally ---")
+    print(f"Total Trainable Parameters: {total_params:,}")
+    print(f"Target Parameters:         ~209,000,000")
+    
+    # 4. Breakdown by component type for transparency
+    emb_params = model.tok_emb.weight.numel()
+    # Note: lm_head is tied to tok_emb, so it's only counted once by the loop
+    
+    # Calculate params for a single block
+    one_block = model.blocks[0]
+    block_params = sum(p.numel() for p in one_block.parameters())
+    all_blocks_params = block_params * cfg.n_layers
+    
+    print(f"\n--- Component Breakdown ---")
+    print(f"Embeddings (Tied):         {emb_params:,}")
+    print(f"Total for 24 Blocks:       {all_blocks_params:,}")
+    print(f"Per-Block Average:         {block_params:,}")
+    
+    diff = abs(total_params - 209_000_000)
+    if diff < 1_000_000:
+        print("\nVERIFICATION SUCCESS: Model matches the v5.0 Build Plan target.")
+    else:
+        print(f"\nNOTE: Model is at {total_params/1e6:.1f}M params. This is expected if 'd_model' or 'layers' were adjusted.")
+========================
+<<data_pipeline.py>>
+import os
+import gc
+import numpy as np
+from tqdm import tqdm
+from datasets import load_dataset
+from transformers import AutoTokenizer
+from huggingface_hub import login
+from config import SLMConfig
+
+cfg = SLMConfig()
+login(token=cfg.hf_token)
+
+tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer)
+EOS = tokenizer.eos_token_id
+assert tokenizer.vocab_size == 32_000
+print(f"Tokenizer ready. eos_id={EOS}")
+
+# == Token targets =========================================
+TOTAL_TRAIN = cfg.target_tokens
+TOTAL_VAL   = cfg.validation_tokens
+ACCEPTED_PER_BATCH = 500
+
+# == Core loop: direct write to memmap ======================================
+def collect_tokens(ds_iter, token_target, out_path, label):
+    print(f"\n  Target: {token_target:,} tokens for [{label}] -> {out_path}")
+    mmap = np.memmap(out_path, dtype=np.uint16, mode="w+", shape=(token_target,))
+    
+    offset       = 0
+    overflow     = []
+    accepted_buf = []
+
+    raw_seen = 0
+
+    # Wrap the loop in a tqdm progress bar tracking tokens written
+    with tqdm(total=token_target, desc=f"[{label}] Tokens", unit="tok", 
+              bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]") as pbar:
+        
+        tqdm.write("  [System] Waiting for Hugging Face to stream the first document...")
+        
+        for doc in ds_iter:
+            if raw_seen == 0:
+                tqdm.write("  [System] Stream connected! Ingesting TinyStories...")
+
+            text = doc.get("text", "")
+            if not text.strip():
+                continue
+
+            raw_seen += 1
+            accepted_buf.append(text)
+            
+            # Keep UI updated so we know it's alive
+            if raw_seen % 50 == 0:
+                pbar.set_postfix(docs=raw_seen, refresh=False)
+
+            # Process a batch ONLY when the buffer is full
+            if len(accepted_buf) >= ACCEPTED_PER_BATCH:
+                
+                encoded_batch = tokenizer(accepted_buf, add_special_tokens=False)["input_ids"]
+                
+                batch_tokens = overflow
+                for seq in encoded_batch:
+                    batch_tokens.extend(seq)
+                    batch_tokens.append(EOS)
+                    
+                n_complete = len(batch_tokens) // cfg.max_seq_len
+                
+                if n_complete > 0:
+                    write_len = n_complete * cfg.max_seq_len
+                    write_tokens = batch_tokens[:write_len]
+                    overflow = batch_tokens[write_len:] 
+                    
+                    tokens_to_write = min(write_len, token_target - offset)
+                    
+                    if tokens_to_write > 0:
+                        mmap[offset : offset + tokens_to_write] = np.array(write_tokens[:tokens_to_write], dtype=np.uint16)
+                        offset += tokens_to_write
+                        mmap.flush()
+                        
+                        # Advance the main progress bar by the number of tokens written
+                        pbar.update(tokens_to_write)
+
+                accepted_buf = []
+                gc.collect()
+
+                if offset >= token_target:
+                    break
+
+        # Handle remaining overflow if we exit the loop before hitting target
+        if accepted_buf and offset < token_target:
+            encoded_batch = tokenizer(accepted_buf, add_special_tokens=False)["input_ids"]
+            batch_tokens = overflow
+            for seq in encoded_batch:
+                batch_tokens.extend(seq)
+                batch_tokens.append(EOS)
+                
+            n_complete = len(batch_tokens) // cfg.max_seq_len
+            write_len = n_complete * cfg.max_seq_len
+            tokens_to_write = min(write_len, token_target - offset)
+            
+            if tokens_to_write > 0:
+                mmap[offset : offset + tokens_to_write] = np.array(batch_tokens[:tokens_to_write], dtype=np.uint16)
+                offset += tokens_to_write
+                mmap.flush()
+                pbar.update(tokens_to_write)
+
+    del mmap
+    gc.collect()
+    
+    # Final summary
+    print(f"\n  [{label}] done. Processed {raw_seen:,} documents.")
+
+# == Run ====================================================================
+print("\n" + "=" * 55)
+print("  Phase 1 — Load raw stream (TinyStories)")
+print("=" * 55)
+ds = load_dataset(cfg.dataset, split="train", streaming=True)
+ds_iter = iter(ds)
+
+print("\n" + "=" * 55)
+print("  Phase 2 — Validation set")
+print("=" * 55)
+val_dir = os.path.dirname(cfg.validation_data)
+if val_dir:
+    os.makedirs(val_dir, exist_ok=True)
+collect_tokens(ds_iter, TOTAL_VAL, cfg.validation_data, "val")
+
+print("\n" + "=" * 55)
+print("  Phase 3 — Training set")
+print("=" * 55)
+train_dir = os.path.dirname(cfg.train_data)
+if train_dir:
+    os.makedirs(train_dir, exist_ok=True)
+collect_tokens(ds_iter, TOTAL_TRAIN, cfg.train_data, "train")
+
+# == Sanity check ===========================================================
+print("\n" + "=" * 55)
+print("  Sanity check")
+print("=" * 55)
+train_data = np.memmap(cfg.train_data, dtype=np.uint16, mode="r")
+val_data   = np.memmap(cfg.validation_data, dtype=np.uint16, mode="r")
+print(f"  train.bin : {len(train_data):,} tokens ({len(train_data)/1e9:.3f}B)")
+print(f"  val.bin   : {len(val_data):,} tokens ({len(val_data)/1e6:.1f}M)")
+print(f"  First 16 ids : {train_data[:16].tolist()}")
+
+max_id = int(train_data.max())
+status = "✓ valid" if max_id < 32_000 else "✗ INVALID — must be < 32000"
+print(f"  Max token id : {max_id}  ({status})")
+decoded = tokenizer.decode(train_data[:32].tolist())
+print(f"  Decoded      : \"{decoded}\"")
+
+if cfg.test_mode:
+    print("\n✓ Smoke test data ready.")
+========================
+<<pretrain.py>>
+import os
+import gc
+import csv
+import math
+import glob
+import time
+import torch
+import numpy as np
+import bitsandbytes as bnb
+import torch.nn.functional as F
+from model_architecture import CustomTransformer
+from config import SLMConfig
+import subprocess
+
+cfg = SLMConfig()
+
+
+# == GPU thermal helpers =======================================================
+
+def get_gpu_temp():
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader"],
+            encoding="utf-8"
+        ).strip()
+        return int(out)
+    except Exception:
+        return 0
+
+
+def gpu_cooling_break(temp):
+    """Pause training if GPU is above threshold. Returns True if a break was taken."""
+    if temp >= cfg.gpu_temp_threshold:
+        print(f"\n⚠ GPU at {temp}°C — cooling break ({cfg.cooling_break_s // 60} min)...")
+        time.sleep(cfg.cooling_break_s)
+        print("  Resuming training.")
+        return True
+    return False
+
+
+# == Learning rate schedule ====================================================
+
+def get_lr(step, total_steps, peak_lr, warmup_steps=cfg.warmup_steps):
+    if step < warmup_steps:
+        return peak_lr * (step + 1) / warmup_steps
+    # Stable phase: 70% of post-warmup steps at peak
+    stable_end = warmup_steps + int((total_steps - warmup_steps) * 0.70)
+    if step < stable_end:
+        return peak_lr
+    # Decay phase: cosine from peak → 10% over final 30%
+    progress = (step - stable_end) / max(1, total_steps - stable_end)
+    cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+    return peak_lr * (cfg.lr_min_ratio + (1 - cfg.lr_min_ratio) * cosine)
+
+
+def set_lr(optimizer, lr):
+    for g in optimizer.param_groups:
+        g["lr"] = lr
+
+
+# == Muon optimizer ============================================================
+# Muon (Momentum + Orthogonalization Update Normalisation) applies Nesterov
+# momentum then orthogonalises the update via Newton-Schulz iterations.
+# Only applied to 2D weight matrices (attention + FFN projections).
+# Embeddings, norms, and biases stay on AdamW.
+
+def zeropower_via_newtonschulz(G, steps=5):
+    """Newton-Schulz iteration to approximate G @ (G^T G)^{-1/2}."""
+    assert G.ndim >= 2
+    a, b, c = (3.4445, -4.7750, 2.0315)
+    X = G.bfloat16() / (G.norm() + 1e-7)
+    if G.size(0) > G.size(1):
+        X = X.T
+    for _ in range(steps):
+        A = X @ X.T
+        X = a * X + b * A @ X + c * A @ A @ X
+    if G.size(0) > G.size(1):
+        X = X.T
+    return X
+
+
+class Muon(torch.optim.Optimizer):
+    """
+    Muon — for all 2D weight matrices in the transformer (Q, K, V, O, gate,
+    up, down projections). Uses Nesterov momentum + orthogonalised updates.
+    """
+    def __init__(self, params, lr=0.02, momentum=0.95, ns_steps=5):
+        defaults = dict(lr=lr, momentum=momentum, ns_steps=ns_steps)
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self):
+        for group in self.param_groups:
+            lr       = group["lr"]
+            momentum = group["momentum"]
+            ns_steps = group["ns_steps"]
+
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                g = p.grad
+                state = self.state[p]
+
+                if "momentum_buffer" not in state:
+                    state["momentum_buffer"] = torch.zeros_like(g)
+
+                buf = state["momentum_buffer"]
+                buf.mul_(momentum).add_(g)
+                # Nesterov lookahead gradient
+                g_nesterov = g + momentum * buf
+
+                if g_nesterov.ndim == 2:
+                    update = zeropower_via_newtonschulz(g_nesterov, steps=ns_steps)
+                    update = update * max(1, g_nesterov.size(0) / g_nesterov.size(1)) ** 0.5
+                else:
+                    update = g_nesterov
+
+                p.add_(update, alpha=-lr)
+
+
+def build_optimizers(model):
+    """
+    Split parameters into two groups:
+      - Muon:  all 2D weight matrices (attention + FFN Linear layers)
+      - AdamW: everything else (embeddings, RMSNorm scales, QK-Norm scales)
+    """
+    muon_params = []
+    adam_params = []
+
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if p.ndim == 2 and any(k in name for k in ["wq", "wk", "wv", "wo",
+                                                     "gate", "up", "down"]):
+            muon_params.append(p)
+        else:
+            adam_params.append(p)
+
+    opt_muon = Muon(muon_params, lr=cfg.lr_muon, momentum=0.95)
+    opt_adam = bnb.optim.AdamW8bit(adam_params, lr=cfg.lr_adam, betas=(0.9, 0.95),
+                                    weight_decay=cfg.weight_decay, eps=1e-8)
+
+    print(f"  Muon params : {sum(p.numel() for p in muon_params)/1e6:.1f}M")
+    print(f"  AdamW params: {sum(p.numel() for p in adam_params)/1e6:.1f}M")
+    return opt_muon, opt_adam
+
+
+# == Data loaders ==============================================================
+
+def get_batch(data, micro_batch, seq_len, device):
+    """Random-sample a micro-batch. x = inputs, y = next-token targets."""
+    ix = torch.randint(len(data) - seq_len - 1, (micro_batch,))
+    x  = torch.stack([
+        torch.from_numpy(data[i : i + seq_len].astype(np.int64))
+        for i in ix
+    ]).to(device)
+    y  = torch.stack([
+        torch.from_numpy(data[i + 1 : i + seq_len + 1].astype(np.int64))
+        for i in ix
+    ]).to(device)
+    return x, y
+
+@torch.no_grad()
+def compute_val_loss(model, val_data, device, n_seqs=50):
+    model.eval()
+    try:
+        losses = []
+        for i in range(n_seqs):
+            start = i * cfg.max_seq_len
+            if start + cfg.max_seq_len + 1 > len(val_data):
+                break
+            x = torch.from_numpy(
+                val_data[start : start + cfg.max_seq_len].astype(np.int64)
+            ).unsqueeze(0).to(device)
+            y = torch.from_numpy(
+                val_data[start + 1 : start + cfg.max_seq_len + 1].astype(np.int64)
+            ).unsqueeze(0).to(device)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                logits = model(x)
+                loss   = F.cross_entropy(logits.view(-1, cfg.vocab_size), y.view(-1))
+            losses.append(loss.item())
+        return sum(losses) / len(losses) if losses else float("nan")
+    finally:
+        model.train()
+
+# == Checkpoint helpers ========================================================
+
+def save_checkpoint(step, model, opt_muon, opt_adam, loss_history):
+    os.makedirs(cfg.ckpt_dir, exist_ok=True)
+    path = os.path.join(cfg.ckpt_dir, f"ckpt_{step:05d}.pt")
+    torch.save({
+        "step":         step,
+        "model":        model.state_dict(),
+        "opt_muon":     opt_muon.state_dict(),
+        "opt_adam":     opt_adam.state_dict(),
+        "loss_history": loss_history,
+    }, path)
+    print(f"  ✓ Checkpoint saved → {path}")
+    _prune_checkpoints()
+
+
+def _prune_checkpoints():
+    """Keep only the most recent cfg.keep_ckpts checkpoints."""
+    ckpts = sorted(glob.glob(os.path.join(cfg.ckpt_dir, "ckpt_*.pt")))
+    for old in ckpts[:-cfg.keep_ckpts]:
+        os.remove(old)
+        print(f"  ✗ Deleted old checkpoint: {old}")
+
+
+def load_latest_checkpoint(model, opt_muon, opt_adam):
+    """Load the most recent checkpoint. Returns (start_step, loss_history)."""
+    ckpts = sorted(glob.glob(os.path.join(cfg.ckpt_dir, "ckpt_*.pt")))
+    if not ckpts:
+        print("  No checkpoint found — starting from scratch.")
+        return 0, []
+
+    path = ckpts[-1]
+    print(f"  Resuming from {path}")
+    # weights_only=True is safer against arbitrary pickle execution (PyTorch 2.4+)
+    ckpt = torch.load(path, map_location="cuda", weights_only=False)
+
+    model.load_state_dict(ckpt["model"])
+    opt_muon.load_state_dict(ckpt["opt_muon"])
+    opt_adam.load_state_dict(ckpt["opt_adam"])
+    loss_history = ckpt.get("loss_history", [])
+
+    print(f"  Resumed at step {ckpt['step']}")
+    return ckpt["step"], loss_history
+
+
+# == CSV logger ================================================================
+
+def init_log(resume):
+    """Create or append to the training log CSV."""
+    if not resume or not os.path.exists(cfg.log_file):
+        with open(cfg.log_file, "w", newline="") as f:
+            writer = csv.writer(f)
+            # val_loss column added
+            writer.writerow(["step", "train_loss", "val_loss", "ppl",
+                             "lr_muon", "lr_adam", "tokens_seen", "elapsed_s"])
+    return open(cfg.log_file, "a", newline="")
+
+
+def write_log(log_f, step, train_loss, val_loss, ppl, lr_m, lr_a, tokens_seen, elapsed):
+    writer = csv.writer(log_f)
+    val_str = f"{val_loss:.4f}" if not math.isnan(val_loss) else "n/a"
+    writer.writerow([step, f"{train_loss:.4f}", val_str, f"{ppl:.2f}",
+                     f"{lr_m:.2e}", f"{lr_a:.2e}", tokens_seen, f"{elapsed:.1f}"])
+    log_f.flush()
+
+
+# == Main training loop ========================================================
+
+def main():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"\n{'='*60}")
+    print(f"  SLM Pre-training")
+    print(f"  Device : {device}")
+    print(f"  dtype  : bfloat16")
+    print(f"{'='*60}\n")
+
+    # == Compute total steps from token budget =================================
+    tokens_per_step = cfg.micro_batch * cfg.grad_accum * cfg.max_seq_len
+    total_steps     = cfg.target_tokens // tokens_per_step
+    print(f"  Token budget  : {cfg.target_tokens/1e9:.1f}B")
+    print(f"  Tokens/step   : {tokens_per_step:,}")
+    print(f"  Total steps   : {total_steps:,}")
+    print(f"  Warmup steps  : {cfg.warmup_steps}")
+    print(f"  Save every    : {cfg.save_every} steps  (rolling {cfg.keep_ckpts} kept)")
+    print(f"  Break every   : {cfg.break_every_steps} steps ({cfg.cooling_break_s//60} min cool-down)\n")
+
+    # == Load data =============================================================
+    assert os.path.exists(cfg.train_data), \
+        f"train.bin not found at '{cfg.train_data}'. Run data_pipeline.py first."
+    assert os.path.exists(cfg.validation_data), \
+        f"val.bin not found at '{cfg.validation_data}'. Run data_pipeline.py first."
+
+    data     = np.memmap(cfg.train_data,      dtype=np.uint16, mode="r")
+    val_data = np.memmap(cfg.validation_data, dtype=np.uint16, mode="r")
+    print(f"  train.bin : {len(data)/1e9:.3f}B tokens")
+    print(f"  val.bin   : {len(val_data)/1e6:.1f}M tokens\n")
+
+    # == Build model ===========================================================
+    model = CustomTransformer(cfg).to(device).to(torch.bfloat16)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"  Model params  : {total_params/1e6:.1f}M\n")
+
+    # torch.compile gives ~20% throughput on Ada Lovelace (RTX 4060)
+    print("  Compiling model (first run ~60s)...")
+    model = torch.compile(model)
+    print("  Compile done.\n")
+
+    # == Build optimizers ======================================================
+    print("  Building optimizers...")
+    opt_muon, opt_adam = build_optimizers(model)
+
+    # == Resume if checkpoint exists ===========================================
+    start_step, loss_history = load_latest_checkpoint(model, opt_muon, opt_adam)
+    resume      = start_step > 0
+    tokens_seen = start_step * tokens_per_step
+
+    # == Init logging ==========================================================
+    log_f = init_log(resume)
+
+    # == Training loop =========================================================
+    model.train()
+    opt_muon.zero_grad()
+    opt_adam.zero_grad()
+
+    accum_loss = 0.0
+    t0         = time.time()
+    start_time = time.time()
+
+    print(f"\n{'='*60}")
+    print(f"  Starting from step {start_step} / {total_steps}")
+    print(f"{'='*60}\n")
+
+    for global_step in range(start_step, total_steps):
+
+        # == LR schedule =======================================================
+        lr_m = get_lr(global_step, total_steps, cfg.lr_muon)
+        lr_a = get_lr(global_step, total_steps, cfg.lr_adam)
+        set_lr(opt_muon, lr_m)
+        set_lr(opt_adam, lr_a)
+
+        # == Gradient accumulation =============================================
+        for _ in range(cfg.grad_accum):
+            x, y = get_batch(data, cfg.micro_batch, cfg.max_seq_len, device)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                logits  = model(x)
+                ce_loss = F.cross_entropy(logits.view(-1, cfg.vocab_size), y.view(-1))
+                # z-loss: prevents logit magnitudes from growing unboundedly over
+                # long runs. Used in PaLM, Gemma, Baichuan. Coefficient 1e-4 is
+                # small enough to not affect language modelling, large enough to
+                # keep the residual stream stable across 4B tokens.
+                z_loss  = 1e-4 * logits.logsumexp(-1).pow(2).mean()
+                loss    = (ce_loss + z_loss) / cfg.grad_accum
+            loss.backward()
+            accum_loss += loss.item()
+
+        # == Optimizer step ====================================================
+        torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
+        opt_muon.step()
+        opt_adam.step()
+        opt_muon.zero_grad()
+        opt_adam.zero_grad()
+
+        tokens_seen += tokens_per_step
+        loss_history.append(accum_loss)
+
+        # == Logging ===========================================================
+        if global_step % cfg.log_every == 0:
+            ppl     = math.exp(min(accum_loss, 20))
+            elapsed = time.time() - t0
+            tok_s   = (cfg.log_every * tokens_per_step) / elapsed if global_step > 0 else 0
+            t0      = time.time()
+
+            # Validation loss every 500 steps (~25 min apart at RTX 4060 speed)
+            val_loss = float("nan")
+            if global_step % 500 == 0:
+                val_loss = compute_val_loss(model, val_data, device)
+                print(
+                    f"  step {global_step:5d}/{total_steps}"
+                    f" | train {accum_loss:.4f}"
+                    f" | val {val_loss:.4f}"
+                    f" | ppl {ppl:7.2f}"
+                    f" | lr_m {lr_m:.1e}"
+                    f" | {tokens_seen/1e9:.3f}B tok"
+                    f" | {tok_s/1e3:.1f}k tok/s"
+                )
+            else:
+                print(
+                    f"  step {global_step:5d}/{total_steps}"
+                    f" | loss {accum_loss:.4f}"
+                    f" | ppl {ppl:7.2f}"
+                    f" | lr_m {lr_m:.1e}"
+                    f" | {tokens_seen/1e9:.3f}B tok"
+                    f" | {tok_s/1e3:.1f}k tok/s"
+                )
+
+            write_log(log_f, global_step, accum_loss, val_loss, ppl,
+                      lr_m, lr_a, tokens_seen, time.time() - start_time)
+
+        # == Checkpoint + thermal check ========================================
+        if global_step % cfg.save_every == 0 and global_step > start_step:
+            save_checkpoint(global_step, model, opt_muon, opt_adam, loss_history)
+            torch.cuda.empty_cache()
+            gc.collect()
+            temp = get_gpu_temp()
+            print(f"  GPU temp: {temp}°C")
+            gpu_cooling_break(temp)
+
+        # == Mandatory cooling break ===========================================
+        # Separate from save_every so it always fires at the 2000-step mark
+        # even if that step was already a checkpoint step.
+        if global_step % cfg.break_every_steps == 0 and global_step > 0:
+            # Only save if this step wasn't just saved by the checkpoint block
+            if global_step % cfg.save_every != 0:
+                save_checkpoint(global_step, model, opt_muon, opt_adam, loss_history)
+            print(f"\n⏸ Mandatory break at step {global_step} — {cfg.cooling_break_s//60} min cool-down")
+            torch.cuda.empty_cache()
+            gc.collect()
+            time.sleep(cfg.cooling_break_s)
+            print("  Resuming.\n")
+
+        accum_loss = 0.0
+
+    # == Final checkpoint ======================================================
+    save_checkpoint(total_steps, model, opt_muon, opt_adam, loss_history)
+    log_f.close()
+
+    total_time = time.time() - start_time
+    print(f"\n{'='*60}")
+    print(f"  Pre-training complete!")
+    print(f"  Total time  : {total_time/3600:.2f} hours")
+    print(f"  Tokens seen : {tokens_seen/1e9:.3f}B")
+    print(f"  Final loss  : {loss_history[-1]:.4f}")
+    print(f"  Final ckpt  : checkpoints/ckpt_{total_steps:05d}.pt")
+    print(f"{'='*60}\n")
+
+
+if __name__ == "__main__":
+    main()
+========================
+<<attention.py>>
+import torch
+import torch.nn as nn
+from flash_attn import flash_attn_func
+from config import SLMConfig
+from rope import apply_rotary_emb
+from rms_norm import RMSNorm
+import math
+import torch.nn.functional as F
+from rope import precompute_freqs_cis
+
+class GQAttention(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.n_heads    = cfg.n_heads       # 12 Query heads
+        self.n_kv_heads = cfg.n_kv_heads    # 4 Key/Value heads
+        
+        # Dimension of each individual attention head (768 // 12 = 64)
+        self.head_dim   = cfg.d_model // cfg.n_heads
+        
+        # How many Query heads share a single Key/Value head (12 // 4 = 3)
+        self.n_rep      = cfg.n_heads // cfg.n_kv_heads
+        
+        # Linear projections for Q, K, V, and Output (No biases, per standard SOTA)
+        self.wq = nn.Linear(cfg.d_model, cfg.n_heads    * self.head_dim, bias=False)
+        self.wk = nn.Linear(cfg.d_model, cfg.n_kv_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(cfg.d_model, cfg.n_kv_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(cfg.n_heads * self.head_dim, cfg.d_model,    bias=False)
+        
+        # QK-Norm: per-head RMSNorm on Q and K prevents attention entropy
+        # collapse at 4096+ context. Used in Qwen2, Gemma 2, Cohere Command-R.
+        self.q_norm = RMSNorm(self.head_dim, cfg.norm_eps)
+        self.k_norm = RMSNorm(self.head_dim, cfg.norm_eps)
+
+    def forward(self, x, freqs_cis):
+        B, T, _ = x.shape
+        
+        # 1. Project inputs and separate into heads
+        q = self.wq(x).view(B, T, self.n_heads,    self.head_dim)
+        k = self.wk(x).view(B, T, self.n_kv_heads, self.head_dim)
+        v = self.wv(x).view(B, T, self.n_kv_heads, self.head_dim)
+        
+        # 2. Apply QK-Norm (Must be done BEFORE RoPE per Qwen2/Gemma2)
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+        
+        # 3. Apply Rotary Positional Embeddings
+        cos, sin = freqs_cis
+        q, k = apply_rotary_emb(q, k, cos, sin)
+        
+        # 4. Repeat KV heads to match the number of Query heads
+        k = k.repeat_interleave(self.n_rep, dim=2)
+        v = v.repeat_interleave(self.n_rep, dim=2)
+        
+        # 5. Compute Attention using optimized FlashAttention-2
+        # causal=True ensures tokens can only attend to past tokens, not future ones
+        out = flash_attn_func(q.to(x.dtype), k.to(x.dtype), v.to(x.dtype), causal=True)
+        
+        # 6. Flatten the heads back together and project to output
+        return self.wo(out.reshape(B, T, -1))
+
+if __name__ == "__main__":
+    # 1. Setup a tiny, trackable configuration
+    cfg = SLMConfig()
+    cfg.d_model = 4
+    cfg.n_heads = 2
+    cfg.n_kv_heads = 1
+    head_dim = cfg.d_model // cfg.n_heads # 2 dimensions per head
+    
+    BATCH = 1
+    SEQ_LEN = 3 # "I", "can", "run"
+    
+    print("Initializing transparent test on CUDA...")
+    # Use float16 for FlashAttention compatibility, set a manual seed for reproducibility
+    torch.manual_seed(42)
+    x = torch.randn(BATCH, SEQ_LEN, cfg.d_model, device='cuda', dtype=torch.float16)
+    freqs_cis = precompute_freqs_cis(head_dim, SEQ_LEN, cfg.rope_theta).to('cuda')
+    
+    # 2. Initialize your real module
+    layer = GQAttention(cfg).to('cuda').to(torch.float16)
+    
+    # ==========================================
+    # PART A: MANUAL "TRANSPARENT" ATTENTION
+    # ==========================================
+    with torch.no_grad():
+        # Get Q, K, V manually using the layer's weights
+        q = layer.wq(x).view(BATCH, SEQ_LEN, cfg.n_heads, head_dim)
+        k = layer.wk(x).view(BATCH, SEQ_LEN, cfg.n_kv_heads, head_dim)
+        v = layer.wv(x).view(BATCH, SEQ_LEN, cfg.n_kv_heads, head_dim)
+        
+        # Apply QK-Norm
+        q = layer.q_norm(q)
+        k = layer.k_norm(k)
+        
+        # Apply RoPE (we skip the actual rotation call here just to look at pure attention, 
+        # but the shapes remain identical)
+        
+        # GQA: Repeat the KV heads to match Q heads (from 1 to 2)
+        k = k.repeat_interleave(layer.n_rep, dim=2)
+        v = v.repeat_interleave(layer.n_rep, dim=2)
+        
+        # Reshape for standard matrix multiplication: [Batch, Heads, Seq_Len, Dim]
+        q_trans = q.transpose(1, 2)
+        k_trans = k.transpose(1, 2)
+        v_trans = v.transpose(1, 2)
+        
+        # 1. The Dot Product (Q * K^T) scaled by sqrt(head_dim)
+        scores = torch.matmul(q_trans, k_trans.transpose(-2, -1)) / math.sqrt(head_dim)
+        
+        # 2. The Causal Mask
+        mask = torch.triu(torch.ones(SEQ_LEN, SEQ_LEN, device='cuda'), diagonal=1).bool()
+        scores.masked_fill_(mask, float('-inf'))
+        
+        # 3. The Softmax (The "Attention Percentages")
+        attention_weights = F.softmax(scores, dim=-1)
+        
+        # 4. Multiply by V and project output
+        manual_context = torch.matmul(attention_weights, v_trans)
+        manual_context = manual_context.transpose(1, 2).contiguous().view(BATCH, SEQ_LEN, cfg.d_model)
+        manual_output = layer.wo(manual_context)
+
+    # ==========================================
+    # PART B: YOUR FLASH ATTENTION MODULE
+    # ==========================================
+    # We pass the same 'x' through your actual code. 
+    # (We bypass RoPE temporarily in the module just for this strict 1:1 math test)
+    with torch.no_grad():
+        q_real = layer.q_norm(layer.wq(x).view(BATCH, SEQ_LEN, cfg.n_heads, head_dim))
+        k_real = layer.k_norm(layer.wk(x).view(BATCH, SEQ_LEN, cfg.n_kv_heads, head_dim)).repeat_interleave(layer.n_rep, dim=2)
+        v_real = layer.wv(x).view(BATCH, SEQ_LEN, cfg.n_kv_heads, head_dim).repeat_interleave(layer.n_rep, dim=2)
+        
+        from flash_attn import flash_attn_func
+        flash_context = flash_attn_func(q_real, k_real, v_real, causal=True)
+        real_output = layer.wo(flash_context.reshape(BATCH, SEQ_LEN, -1))
+
+    # ==========================================
+    # PRINT THE RESULTS
+    # ==========================================
+    print("\n--- The Mathematical 'Thinking' Process (Head 0) ---")
+    print("1. The Causal Attention Grid (Softmax Percentages):")
+    # Convert to percentages for readability
+    grid = (attention_weights[0, 0] * 100).int()
+    print(f"Token 0 looks at: {grid[0].tolist()}%")
+    print(f"Token 1 looks at: {grid[1].tolist()}%")
+    print(f"Token 2 looks at: {grid[2].tolist()}%")
+    
+    print("\n--- Verification ---")
+    # float16 has precision noise, so we check if they are close, not perfectly identical
+    is_match = torch.allclose(manual_output, real_output, atol=1e-2)
+    print(f"Does the manual math perfectly match your FlashAttention code? -> {is_match}")
+========================
+<<config.py>>
+from dataclasses import dataclass
+
+@dataclass
+class SLMConfig:
+    # == Model ==
+    vocab_size:         int = 32_000
+    d_model:            int = 768                                           # Size of vector representing each token
+    n_layers:           int = 24                                            # Number of transformer blocks
+    n_heads:            int = 12                                            # Number of query heads
+    n_kv_heads:         int = 4                                             # Number of key, value heads (Group Query Attention)
+    ffn_dim:            int = 2048                                          # Size of hidden layer in FeedForward network
+    max_seq_len:        int = 4096                                          # Maximum context window
+    rope_theta:         float = 500_000.0                                   # Base frequency for rotary embeddings
+    norm_eps:           float = 1e-5
+
+    # == Dataset ==
+    test_mode:          bool = True
+    target_tokens:      int = 20_000_000                                    # 20M tokens
+    validation_tokens:  int = 5_000_000                                     # 5M held-out for validation
+    hf_token:           str = '<HF_TOKEN>'
+    # dataset:            str = 'HuggingFaceTB/dclm-edu'
+    dataset:            str = 'roneneldan/TinyStories'
+    tokenizer:          str = 'mistralai/Mistral-7B-v0.1'
+    train_data:         str = 'train.bin'
+    validation_data:    str = 'val.bin'
+    disk_batch_size:    int = 100_000_000                                   # 100M tokens per batch
+    batched_dir:        str = 'batches'
+
+    # == Training hyperparameters ==
+    micro_batch:        int = 2                                             # Sequences per GPU step
+    grad_accum:         int = 96                                            # Steps before optimizer update | effective batch = 2 × 96 × 4096 = 786,432 tokens/step
+    lr_muon:            float = 0.02                                        # Muon peak LR (matrix weights)
+    lr_adam:            float = 3e-4                                        # AdamW peak LR (embeddings, norms, biases)
+    lr_min_ratio:       float = 0.1                                         # Cosine decays to 10% of peak
+    warmup_steps:       int = 100                                           # Linear warmup
+    weight_decay:       float = 0.1
+    grad_clip:          float = 1.0
+    save_every:         int = 100                                           # Save a checkpoint every N global steps
+    keep_ckpts:         int = 5                                             # Rolling window — delete oldest beyond this
+    log_every:          int = 10                                            # Print + write CSV every N global steps
+    ckpt_dir:           str = 'checkpoints'
+    log_file:           str = 'training_log.csv'
+
+    # Thermal management
+    gpu_temp_threshold: int = 85                                            # pause if GPU hits this (°C)
+    cooling_break_s:    int = 600                                           # 10 min cool-down
+    break_every_steps:  int = 2000                                          # mandatory break regardless of temp
+========================
+<<model_architecture.py>>
+import torch
+import torch.nn as nn
+import math
+from torch.utils.checkpoint import checkpoint
+
+# Import our custom, verified modules
+from rope import precompute_freqs_cis
+from rms_norm import RMSNorm
+from attention import GQAttention
+from ffn import SwiGLUFFN
+from config import SLMConfig
+
+class TransformerBlock(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.attn   = GQAttention(cfg)
+        self.ffn    = SwiGLUFFN(cfg)
+        
+        # Pre-attention and Pre-FFN normalization
+        self.norm1  = RMSNorm(cfg.d_model, cfg.norm_eps)
+        self.norm2  = RMSNorm(cfg.d_model, cfg.norm_eps)
+
+    def _impl(self, x, freqs_cis):
+        # The Residual Connection: x = x + Layer(Norm(x))
+        x = x + self.attn(self.norm1(x), freqs_cis)
+        x = x + self.ffn(self.norm2(x))
+        return x
+
+    def forward(self, x, freqs_cis):
+        # Gradient Checkpointing: Recomputes activations during the backward 
+        # pass instead of storing them in VRAM. 
+        return checkpoint(self._impl, x, freqs_cis, use_reentrant=False)
+
+
+class CustomTransformer(nn.Module):
+    def __init__(self, cfg=None):
+        super().__init__()
+        self.cfg     = cfg or SLMConfig()
+        
+        # 1. Token Embeddings
+        self.tok_emb = nn.Embedding(self.cfg.vocab_size, self.cfg.d_model)
+        
+        # 2. Stack of 24 Transformer Blocks
+        self.blocks  = nn.ModuleList([TransformerBlock(self.cfg) for _ in range(self.cfg.n_layers)])
+        
+        # 3. Final Output Normalization
+        self.norm    = RMSNorm(self.cfg.d_model, self.cfg.norm_eps)
+        
+        # 4. Language Model Head (Vocab Predictor)
+        self.lm_head = nn.Linear(self.cfg.d_model, self.cfg.vocab_size, bias=False)
+        
+        # Tied Embeddings: Share weights between input and output
+        self.lm_head.weight = self.tok_emb.weight
+
+        # Precompute RoPE frequencies once for the whole model
+        cos, sin = precompute_freqs_cis(
+            self.cfg.d_model // self.cfg.n_heads,
+            self.cfg.max_seq_len,
+            self.cfg.rope_theta
+        )
+        self.register_buffer("freqs_cos", cos)
+        self.register_buffer("freqs_sin", sin)
+                
+        self._init_weights()
+
+    def _init_weights(self):
+        """Depth-scaled initialization to keep the residual stream stable."""
+        std_proj = 0.02 / math.sqrt(2 * self.cfg.n_layers)
+        for name, m in self.named_modules():
+            if isinstance(m, nn.Linear):
+                is_output_proj = name.endswith(('wo', 'down'))
+                std = std_proj if is_output_proj else 0.02
+                nn.init.normal_(m.weight, mean=0.0, std=std)
+            elif isinstance(m, nn.Embedding):
+                nn.init.normal_(m.weight, mean=0.0, std=0.02)
+
+    def forward(self, x):
+        # 1. Look up token vectors
+        x = self.tok_emb(x)
+        
+        # 2. Slice RoPE frequencies to match the current sequence length
+        freqs = (self.freqs_cos[:x.size(1)], self.freqs_sin[:x.size(1)])
+        
+        # 3. Pass through all 24 blocks
+        for block in self.blocks:
+            x = block(x, freqs)
+            
+        # 4. Normalize and predict the next token
+        return self.lm_head(self.norm(x))
+========================
+<<main.py>>
+def main():
+    print("Hello from slm!")
+
+
+if __name__ == "__main__":
+    main()
+
+========================
+<<check_capacity.py>>
+import subprocess
+import os
+
+def check_hardware():
+    print("🔍 Scanning Pop!_OS Hardware for ML Training...\n")
+    print("-" * 50)
+    
+    # 1. Check GPU / VRAM
+    try:
+        # Calls nvidia-smi natively on Linux
+        nvidia_smi = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=name,memory.total,memory.free", "--format=csv,noheader"], 
+            encoding='utf-8'
+        ).strip().split('\n')
+        
+        for i, gpu in enumerate(nvidia_smi):
+            name, total_ram, free_ram = gpu.split(', ')
+            total_mb = int(total_ram.replace(' MiB', ''))
+            print(f"🖥️  GPU {i}: {name}")
+            print(f"📊 Total VRAM: {total_mb} MB")
+            
+            # MATH FOR MODEL SIZE:
+            # We reserve 20% of VRAM for batch size, context window, and system overhead.
+            usable_vram_mb = total_mb * 0.8
+            usable_vram_bytes = usable_vram_mb * 1024 * 1024
+            
+            # Rule of thumb for full training (fp16/bf16 + AdamW): ~18 bytes per parameter
+            max_params_full = usable_vram_bytes / 18
+            
+            # Rule of thumb for LoRA fine-tuning: ~6 bytes per parameter
+            max_params_lora = usable_vram_bytes / 6
+            
+            print(f"  -> Max Model Size (Full Pre-training): ~{max_params_full / 1e6:.0f} Million parameters")
+            print(f"  -> Max Model Size (LoRA Fine-tuning): ~{max_params_lora / 1e6:.0f} Million parameters\n")
+            
+    except FileNotFoundError:
+        print("❌ No NVIDIA GPU detected or nvidia-smi not installed.")
+        print("Training locally will rely on CPU, which is highly impractical for building an SLM from scratch.\n")
+
+    # 2. Check System RAM (Crucial for loading datasets)
+    try:
+        with open('/proc/meminfo', 'r') as f:
+            meminfo = f.readlines()
+        total_ram_kb = int([line for line in meminfo if 'MemTotal' in line][0].split()[1])
+        total_ram_gb = total_ram_kb / (1024 * 1024)
+        print(f"🧠 System RAM: {total_ram_gb:.1f} GB")
+        if total_ram_gb < 16:
+            print("  ⚠️ Warning: Less than 16GB RAM might bottleneck dataset tokenization.")
+        else:
+            print("  ✅ System RAM looks sufficient for data loading pipelines.\n")
+    except Exception:
+        print("Could not read system RAM.\n")
+        
+    print("-" * 50)
+
+if __name__ == "__main__":
+    check_hardware()
+========================
+<<ffn.py>>
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from config import SLMConfig
+
+class SwiGLUFFN(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        # Ensure ALL THREE are present
+        self.gate = nn.Linear(cfg.d_model, cfg.ffn_dim, bias=False)
+        self.up   = nn.Linear(cfg.d_model, cfg.ffn_dim, bias=False)
+        self.down = nn.Linear(cfg.ffn_dim, cfg.d_model, bias=False)
+
+    def forward(self, x):
+        # The SwiGLU mathematical formula: 
+        # 1. Project input through the gate and apply SiLU activation
+        # 2. Project input through the up matrix (no activation)
+        # 3. Multiply them together element-wise
+        # 4. Project back down to the model dimension
+        return self.down(F.silu(self.gate(x)) * self.up(x))
+
+if __name__ == "__main__":
+    # 1. Setup standard configuration
+    cfg = SLMConfig()
+    
+    # 2. Initialize the SwiGLU network
+    print(f"Building SwiGLUFFN (d_model={cfg.d_model}, ffn_dim={cfg.ffn_dim})...")
+    ffn = SwiGLUFFN(cfg)
+    
+    # 3. Create dummy input data [Batch, Seq_Len, d_model]
+    BATCH_SIZE = 2
+    SEQ_LEN = 32
+    x = torch.randn(BATCH_SIZE, SEQ_LEN, cfg.d_model)
+    
+    # 4. Run the forward pass
+    print("Running forward pass...")
+    output = ffn(x)
+    
+    # 5. Verify shapes
+    print("\n--- Shape Verification ---")
+    print(f"Input shape (x):      {list(x.shape)}")
+    print(f"Output shape (out):   {list(output.shape)}")
+    
+    if x.shape == output.shape:
+        print("\nSUCCESS! The SwiGLU FFN processed the data perfectly.")
+========================
+<<rope.py>>
+import torch
+
+def precompute_freqs_cis(dim, seq_len, theta=500_000.0):
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
+    t = torch.arange(seq_len, device=freqs.device)
+    freqs = torch.outer(t, freqs)          # [seq_len, dim/2]
+    cos   = torch.cos(freqs)               # [seq_len, dim/2]
+    sin   = torch.sin(freqs)               # [seq_len, dim/2]
+    return cos, sin                        # plain floats — no complex!
+
+def _rotate_half(x):
+    """Negate the second half and swap: [-x2, x1]."""
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat([-x2, x1], dim=-1)
+
+def apply_rotary_emb(xq, xk, cos, sin):
+    cos = cos.to(dtype=xq.dtype)
+    sin = sin.to(dtype=xq.dtype)
+    seq_len = xq.shape[1]
+    cos = cos[:seq_len].unsqueeze(0).unsqueeze(2)
+    sin = sin[:seq_len].unsqueeze(0).unsqueeze(2)
+    cos = torch.cat([cos, cos], dim=-1)
+    sin = torch.cat([sin, sin], dim=-1)
+    xq_out = xq * cos + _rotate_half(xq) * sin
+    xk_out = xk * cos + _rotate_half(xk) * sin
+    return xq_out, xk_out
+    
+
+if __name__ == "__main__":
+    DIM = 4
+    SEQ_LEN = 2
+    THETA = 10.0
+    
+    freqs_cis = precompute_freqs_cis(dim=DIM, seq_len=SEQ_LEN, theta=THETA)
+    
+    base_vector = [1.0, 2.0, 3.0, 4.0]
+    
+    # 4D Tensor: [Batch=1, Seq_Len=2, Num_Heads=1, Head_Dim=4]
+    xq = torch.tensor([[
+        [base_vector], # Token 0
+        [base_vector]  # Token 1
+    ]])
+    xk = xq.clone()
+    
+    xq_rotated, xk_rotated = apply_rotary_emb(xq, xk, freqs_cis)
+    
+    print("--- Original Vectors ---")
+    print(f"Token 0: {xq[0, 0, 0].tolist()}")
+    print(f"Token 1: {xq[0, 1, 0].tolist()}\n")
+    
+    print("--- Rotated Vectors (RoPE Applied) ---")
+    print(f"Token 0: {[round(num, 4) for num in xq_rotated[0, 0, 0].tolist()]}")
+    print(f"Token 1: {[round(num, 4) for num in xq_rotated[0, 1, 0].tolist()]}")
+========================
+<<consolidate_code.py>>
+import os
+from config import SLMConfig
+
+cnfg = SLMConfig()
+
+SKIP_DIRS = {".venv", "venv", "env", "__pycache__", ".git", "node_modules", "site-packages", ".mypy_cache", ".tox"}
+
+def consolidate_py_files(root_folder, output_file="consolidated.txt"):
+    with open(output_file, "w", encoding="utf-8") as out:
+        for dirpath, dirnames, filenames in os.walk(root_folder):
+            # Prune skip dirs in-place so os.walk won't descend into them
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+            for filename in filenames:
+                if filename.endswith(".py"):
+                    filepath = os.path.join(dirpath, filename)
+                    rel_path = os.path.relpath(filepath, root_folder)
+                    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                        code = f.read()
+                        if cnfg.hf_token in code:
+                            code = code.replace(cnfg.hf_token, '<HF_TOKEN>')
+                    out.write(f"<<{rel_path}>>\n")
+                    out.write(code)
+                    out.write("\n========================\n")
+    print(f"Done! Output written to: {output_file}")
+
+if __name__ == "__main__":
+    root = "/home/prathamesh/Data-Science/SLM/"
+    output = "consolidated.txt"
+    consolidate_py_files(root, output)
+========================
