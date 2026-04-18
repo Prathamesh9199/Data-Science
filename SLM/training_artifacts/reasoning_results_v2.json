@@ -1,0 +1,82 @@
+[
+    {
+        "prompt": "If I have 5 apples and eat 2, how many apples do I have left?",
+        "output": "\n\nI tried to make a list of all the apples that can be eaten. I tried to make a list of all the apples that can be consumed. But I don't know what to do with them.\n\n\u2022 @Rhymn: You are right. The apples are not eating any fruit or vegetables. They are eating the same type of food. \u2013\u00a0Johann Mar 1 '18 at 17:40\n\u2022 @"
+    },
+    {
+        "prompt": "Solve for x: 2x + 5 = 15. x = ",
+        "output": "3 x - 6 = 0.01. The answer is 3 x - 6. Find the value of x that can be written in terms of x, and solve for x.\n\nSolve for x:\n\n(4x + 5) + (4x + 5) = 0.01.\n\nSolve for x:\n\n(4x + 5) + (4x + 5) = 0."
+    },
+    {
+        "prompt": "What is the square root of 64?",
+        "output": "\n\n1. 35\n2. 87\n3. 9\n4. 10\n\n1. 10\n\n1. 2\n\n1. 1\n\n1. 1\n\n1. 1\n\n1. 1\n\n1. 1\n\n1. 1\n\n1. 1\n\n1. 1\n\n1. 1\n\n1. 1\n\n1"
+    },
+    {
+        "prompt": "A train leaves New York at 3 PM traveling 60 mph. How far has it traveled by 5 PM?",
+        "output": "\n\n2. The train is on the road. What is the distance between the train and the train?\n\n3. The train is on the road. What is the distance from the train to the train?\n\n4. The train passes through a station. What is the distance from the train to the train?\n\n5. The train passes through a station. What is the distance from the train to the train?\n\n6. The train passes through a station. What"
+    },
+    {
+        "prompt": "All cats have tails. Fluffy is a cat. Does Fluffy have a tail?",
+        "output": "\n\nThe two most common cats are the cats and dogs. The cats are a large, round, and big, white dog. They can be very small and round, but they can be very large. They can be very large and round.\n\nWhat are the cats?\n\nBoth cats and dogs have different characteristics. Some cats have a long tail, while others have a short tail. They also have a long tail, which means that cats have a long tail.\n\n"
+    },
+    {
+        "prompt": "If A is taller than B, and B is taller than C, who is the tallest?",
+        "output": "\n\n1. 250 feet long\n\nA 36-foot (48\u00a0mm) long wheel is a 79-foot (120\u00a0mm) long wheel. The wheel has two wheels: one for the right side and another for the right side. What is the speed of the wheel?\n\na) 120 meters\n\nb) 120 meters\n\nc) 120 meters\n\nd)"
+    },
+    {
+        "prompt": "Which is heavier: 1 pound of feathers or 1 pound of bricks?",
+        "output": "\n\n2. The first two pieces of a horse\u2019s body are the same size, but the legs are the same size.\n\n3. The second piece of a horse\u2019s body is the same size as the other parts of the horse\u2019s body.\n\n4. The fourth and fifth pieces of a horse\u2019s body are the same size.\n\n5. The fifth and sixth pieces of a horse\u2019s body are the same size.\n\n6. The"
+    },
+    {
+        "prompt": "If you drop a glass of water on the floor, what happens?",
+        "output": "\n\nA. The water is in the room and the glass is made from a liquid that has a strong liquid.\n\nB. A glass is made from a liquid that has a strong liquid that has a strong liquid that has a strong liquid that has a strong liquid that has a strong liquid that has a strong liquid that has a strong liquid that has a strong liquid that has a strong liquid that has a strong liquid that has a strong liquid that has a strong liquid that has a strong liquid"
+    },
+    {
+        "prompt": "What is the next number in the sequence: 2, 4, 6, 8, ",
+        "output": "10, 15, 27, 33, 35, 46, 28, 59, 17, 18, 20, 21, 19, 21, 22, 33, 36, 38, 46, 16, 30, 31, 36, 32, 33, "
+    },
+    {
+        "prompt": "Complete the pattern: A, C, E, G, ",
+        "output": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28, 2"
+    },
+    {
+        "prompt": "Write a Python function to calculate the factorial of a number.",
+        "output": "\n\n```python\ndef get_factorial(x, y):\n    return x * (y - 1) / (y - 2)\n```\n\nIn this unit, we will learn how to calculate the factorial of a number using Python. We will use the `np.linalg.norm()` function from the NumPy library to compute the factorial of a number.\n\nBefore we dive into the code, let's first"
+    },
+    {
+        "prompt": "def is_even(num):\n    \"\"\"Returns True if num is even, else False\"\"\"",
+        "output": "\n    return np.array([[0], [1], [2]])\n```\nIn this example, we first create a `NumPy array `size` to store the number of elements in the array `num`. We then create a `NumPy array `size` to store the number of elements in the array `num`. We then use the `np.array()` function to find the element in the array `num`. Finally, we use the `np.array"
+    },
+    {
+        "prompt": "Write a for loop in Python that prints numbers from 1 to 10.",
+        "output": "\n\nNow, let's write some code to create our loop:\n```python\ndef main():\n    # create a loop\n    if len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len(len("
+    },
+    {
+        "prompt": "If it is raining outside, what should I take with me to stay dry?",
+        "output": "\n\n1. What is the difference between the two?\n\n2. What are the differences between the two?\n\n3. Is there a difference in temperature?\n\n4. How does this change in temperature affect my body?\n\n5. Are there any other factors that can influence my body's temperature?\n\n6. In the same way, what are the different factors that affect my body's temperature?\n\n7. The difference between the two is not"
+    },
+    {
+        "prompt": "The capital of France is",
+        "output": "the capital of France.\nThe capital of France is the capital of France, which is the capital of France and the capital of France. The capital of France is the capital of France.\nHistory.\nIn 1537, the French Revolutionary War was fought between France and France. In 1560, France became a major part of France and France. In 1564, France gained its power from France.\nIn 1582,"
+    },
+    {
+        "prompt": "List three primary colors.",
+        "output": "\n\n1. Red: A yellowish-brown color with a green color. It has a yellowish-brown hue and is used in many other ways.\n2. Yellow: The yellow color of the red color. It has a black color, but it has a white color.\n3. Black: A yellow color that appears to be yellow. It is a yellow color.\n4. Blue: The yellow color of the blue color. It is a purple color"
+    },
+    {
+        "prompt": "Can a normal human jump over a two-story house?",
+        "output": "\n\n1. A 32-foot tall building with a diameter of 58 feet, and a height of 60 meters. The roof is 47 feet wide.\n\n2. The 9th floor has a 30-foot tall tower. It has a 30-foot diameter tower. The tower is 15 feet long and 15 feet wide.\n\n3. The 15-foot tall tower has a 3"
+    },
+    {
+        "prompt": "If I put a glass of water in the freezer, what happens to the water?",
+        "output": "\n\n\u2022 The glass of water is not able to flow freely. The glass of water has no effect on the water.\n\n\u2022 What is the difference between the two different types of water?\n\n\u2022 What is the difference between the two kinds of water?\n\n\u2022 Why is it different from the other kinds of water?\n\n\u2022 How does this change the water?\n\n\u2022 What is the difference between the two kinds of water?\n\n\u2022 What is the difference between"
+    },
+    {
+        "prompt": "Explain the theory of relativity in one simple sentence.",
+        "output": "\n\n1. The question is: How does the universe have a relationship with the universe?\n\n2. What are the relationships between the universe and the universe?\n\n3. What are the relationships between the universe and the universe?\n\n4. What are the relationships between the universe and the universe?\n\n5. What are the relationships between the universe and the universe?\n\n6. What are the relationships between the universe and the universe?\n\n7. What are"
+    },
+    {
+        "prompt": "Translate 'Hello, how are you?' to Spanish.",
+        "output": "\n\nBob: Sure! So, when we talk about the word 'do' or 'to,' we mean something like 'I am a good person.' And that's exactly what happened with the Spanish language.\n\nAlice: Oh, I see. Like when my friend wants to play soccer but doesn't want to play with it? That would be fun and interesting!\n\nBob: Exactly! Now imagine if your friend wants to play soccer but doesn'"
+    }
+]

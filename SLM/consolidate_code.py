@@ -3,7 +3,11 @@ from config import SLMConfig
 
 cnfg = SLMConfig()
 
-SKIP_DIRS = {".venv", "venv", "env", "__pycache__", ".git", "node_modules", "site-packages", ".mypy_cache", ".tox"}
+SKIP_DIRS = {".venv", "venv", "env", "__pycache__", ".git", 
+             "node_modules", "site-packages", ".mypy_cache", ".tox", 
+             "base_models", "batches", "checkpoints", "data", "data copy",
+             "data_bkp", "other", "plan", "training_artifacts"
+            }
 
 def consolidate_py_files(root_folder, output_file="consolidated.txt"):
     with open(output_file, "w", encoding="utf-8") as out:
@@ -25,5 +29,5 @@ def consolidate_py_files(root_folder, output_file="consolidated.txt"):
 
 if __name__ == "__main__":
     root = "/home/prathamesh/Data-Science/SLM/"
-    output = "consolidated.txt"
+    output = "codebase.txt"
     consolidate_py_files(root, output)

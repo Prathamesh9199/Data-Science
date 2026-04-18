@@ -1,0 +1,111 @@
+{
+    "model_params": 466957824,
+    "device": "cuda",
+    "temperature": 0.3,
+    "evaluations": {
+        "Math & Arithmetic": [
+            {
+                "prompt": "If I have 5 apples and eat 2, how many apples do I have left?",
+                "response": "1. 30\n2. 40\n3. 60\n4. None of these\n\nOption 2 : 40\n\n## Detailed Solution\n\nConcept:\n\nLet the number of apples be x.\n\nThen,\u00a0$$\\frac{x}{5} = \\frac{2}{5}$$\n\n\u21d2 x = 2\n\nHence, we can say that,\u00a0$$x = 2$$\n\n\u2234 The number of apples left is 2.\n\nCalculation:\n\nGiven:\n\nThe number of apples left is 5.\n\nWe know that,\u00a0$$5^",
+                "metrics": {
+                    "tokens_generated": 150,
+                    "tokens_per_second": 38.9
+                }
+            },
+            {
+                "prompt": "A train leaves New York at 3 PM traveling 60 mph. How far has it traveled by 5 PM?",
+                "response": "A train travels 120 miles in 4 hours, and a train travels 80 miles in 3 hours. If the train is moving at 75 mph, how long will it travel by 5 minutes?\n\nA train travels 150 miles in 3 hours, and a train travels 100 miles in 2 hours. What is the speed of the train?\n\nWhat is the distance between New York City and Los Angeles?\n\nHow many miles does it take to travel from New York City to Los Angeles?\n\nThe average speed for a train is 45 mph. The average speed of a train is 100 mph. What is",
+                "metrics": {
+                    "tokens_generated": 150,
+                    "tokens_per_second": 39.72
+                }
+            },
+            {
+                "prompt": "Solve this equation for x: 3x + 9 = 24. Step 1: Subtract 9 from both sides. Step 2:",
+                "response": "Divide both sides by 3 to get the value of x. Step 3: Multiply the result by 6. Step 4: Add the results together.\n\n### Example Question #1 : Solving Equations\n\nSolve the following equations using substitution and elimination method.\n\na) 5x \u2013 7 = 0\nb) 8x \u2013 10 = 0\nc) 4x \u2013 10 = 0\nd) 10x \u2013 14 = 0\n\nSolution:\n\nStep 1: Substitute the given values in the given equation.\n\n5x \u2013 7 = 0",
+                "metrics": {
+                    "tokens_generated": 150,
+                    "tokens_per_second": 39.55
+                }
+            }
+        ],
+        "Logic & Deduction": [
+            {
+                "prompt": "All cats have tails. Fluffy is a cat. Therefore,",
+                "response": "the tail of a cat is not a part of its body.\n\nThe tail of a cat is made up of two parts: the head and the tail. The head is the part that is attached to the body. It is also called the \"tail\". The tail is the part that is attached to the body.\n\nA cat has a tail that is not a part of its body. This is because it is not a part of its body. A cat's tail is not a part of its body.\n\nCats have four toes on their feet. They are called \"foot\" or \"feet\". These toes help them move around.\n\nFeline Foot\n\nThe foot of a cat is made up",
+                "metrics": {
+                    "tokens_generated": 150,
+                    "tokens_per_second": 40.16
+                }
+            },
+            {
+                "prompt": "If Alice is taller than Bob, and Bob is taller than Charlie, who is the shortest?",
+                "response": "Alice: Hmm...I think I'm thinking of a man. He's shorter than Bob, so he's taller. But if you look at him from the side, it looks like he's taller than Bob. So we can assume that he is longer than Charlie.\n\nBob: Oh yeah, I see what you mean. And since both are shorter than Bob, they must be equal in length. That makes sense.\n\nAlice: Exactly! Now let's imagine Alice wants to find out more about her friend's height. She could ask someone else for help or use some kind of calculator.\n\nBob: Like a computer program?",
+                "metrics": {
+                    "tokens_generated": 150,
+                    "tokens_per_second": 39.46
+                }
+            },
+            {
+                "prompt": "There are three doors. Door 1 has a bear. Door 2 has a lion. Door 3 is safe. Which door should I open?",
+                "response": "Answer: A. The first one is safe, and the second one is not. B. The first one is safe, and the second one is not. C. The first one is safe, and the second one is not. D. The first one is safe, and the second one is not. Answer: A. The first one is safe, and the second one is not. Answer: B. The first one is safe, and the second one is not. Answer: C. The first one is safe, and the second one is not. Answer: D. The first one is safe, and the second one is not. Answer: E. The first one is safe, and the second one is not.",
+                "metrics": {
+                    "tokens_generated": 150,
+                    "tokens_per_second": 40.24
+                }
+            }
+        ],
+        "Spatial & Physical": [
+            {
+                "prompt": "If you drop a fragile glass on a concrete floor, what is most likely to happen?",
+                "response": "Bob: Hmmm...I guess I'll get it right. But why would someone want to do that?\n\nAlice: Well, sometimes people don't realize how important it is to take care of their surroundings. They might forget to turn off lights when leaving a room or use up all the trash they produce. By doing this, we can help protect our planet for future generations.\n\nBob: Oh, I see. So being mindful of my actions helps keep the environment clean and safe. What about recycling? How does that fit into environmental conservation?\n\nAlice: Great question! Recycling involves converting waste materials into new products instead of throwing them away. For example",
+                "metrics": {
+                    "tokens_generated": 150,
+                    "tokens_per_second": 39.05
+                }
+            },
+            {
+                "prompt": "Which is heavier: 1 pound of feathers or 1 pound of solid iron?",
+                "response": "The answer to this question is that the lighter the object, the more it will weigh. The difference between a heavy and light object is that a light object has a greater mass than a light one. This means that the lighter the object, the more it will weigh.\n\nBut what about a metal object? In this case, the weight of the metal is not as important as the weight of the object itself. If you were to measure the weight of a metal object, you would find that it was much heavier than the weight of the object itself.\n\nThis is because the weight of an object depends on its density. Density is defined as the ratio of the mass of an object to the volume of space in which",
+                "metrics": {
+                    "tokens_generated": 150,
+                    "tokens_per_second": 39.77
+                }
+            },
+            {
+                "prompt": "If I leave an ice cube on the kitchen counter in the middle of summer, what will happen to it?",
+                "response": "The answer is that if you leave a frozen watermelon out for too long, it will freeze and become solid. This is because when you put the ice cubes into the freezer, they melt and form a layer of ice. When you place them in the freezer, they start to melt and form a layer of ice. The ice melts and forms a layer of ice that can be used as a food preservation solution.\n\nIf you have a frozen watermelon, you can use it as a food preservation solution by placing it in the freezer. You can also use it as a food preservation solution by adding salt or sugar to the watermelon.\n\nYou can also use it as",
+                "metrics": {
+                    "tokens_generated": 150,
+                    "tokens_per_second": 39.42
+                }
+            }
+        ],
+        "Coding & Syntax": [
+            {
+                "prompt": "Write a Python function to calculate the factorial of a number.",
+                "response": "```python\ndef factorial(n):\n    if n == 0:\n        return 1\n    else:\n        return n * factorial(n-1)\n```\n\n### Factorial Function\n\nThe factorial function is defined as follows:\n\n$$\nf(n) = \\sum_{k=0}^{n} k!\n$$\n\nwhere $k$ is the number of factors, and $n$ is the total number of factors. The factorial function returns the number of ways to choose $k$ items from $n$.\n\nIn Python, we can implement the factorial function using the `factorial` function from the NumPy library",
+                "metrics": {
+                    "tokens_generated": 150,
+                    "tokens_per_second": 40.0
+                }
+            },
+            {
+                "prompt": "def is_even(num):\n    \"\"\"Returns True if num is even, else False\"\"\"",
+                "response": "return (num == 0) &amp;&amp; (num % 2 == 1).is_odd()\n```\n\nIn this code, we first define a function `def` that takes an integer as input and returns its square. We then use the `is_even` method of this function to check if the number is even or odd. If it's not, we return `True`. Otherwise, we return `False`.\n\n### Conclusion\n\nIn this unit, we learned about functions and how they can be used in Python to perform specific tasks. We saw how functions can be used to create objects, which are instances of the class that have their own attributes and methods. We",
+                "metrics": {
+                    "tokens_generated": 150,
+                    "tokens_per_second": 39.35
+                }
+            },
+            {
+                "prompt": "List three popular programming languages:",
+                "response": "C++, Java, and Python. Each language has its own unique features that make them suitable for specific tasks. For example, C++ is great at creating dynamic programs, while Java is great for data structures like arrays and sets.\n\nNow let's talk about how these languages are used in real life. One way they do this is through something called \"data structures.\" Think of data structures like boxes where you can put things inside to store information. In the context of programming, we often use data structures to organize our code so that it runs smoothly.\n\nFor instance, imagine you have a list of numbers. You could create a simple data structure using lists or dictionaries. A dictionary would be just one type of data",
+                "metrics": {
+                    "tokens_generated": 150,
+                    "tokens_per_second": 39.57
+                }
+            }
+        ]
+    }
+}

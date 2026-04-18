@@ -30,214 +30,69 @@ if __name__ == "__main__":
     print("Input: ", x)
     print("Output:", output)
 ========================
-<<check_env.py>>
-import torch
-import flash_attn
+<<release_RAM.py>>
+import subprocess
+import time
 
-print("=== Environment Check ===")
-print(f"PyTorch Version: {torch.__version__}")
-print(f"CUDA Available:  {torch.cuda.is_available()}")
-if torch.cuda.is_available():
-    print(f"Device Name:     {torch.cuda.get_device_name(0)}")
-    print(f"CUDA Capability: {torch.cuda.get_device_capability(0)}")
-print(f"Flash-Attn:      {flash_attn.__version__}")
-========================
-<<verify_params.py>>
-from model_architecture import CustomTransformer
-from config import SLMConfig
+def read_meminfo():
+    with open('/proc/meminfo', 'r') as f:
+        info = {}
+        for line in f:
+            key, val = line.split(':')
+            info[key.strip()] = int(val.strip().split()[0]) / 1024 / 1024  # GB
+    return info
 
-def count_parameters(model):
-    # Sum up all parameters that require a gradient
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+def print_ram(label):
+    m = read_meminfo()
+    used = m['MemTotal'] - m['MemAvailable']
+    print(f"  {label}")
+    print(f"    Total RAM : {m['MemTotal']:.1f} GB")
+    print(f"    Used RAM  : {used:.1f} GB")
+    print(f"    Available : {m['MemAvailable']:.1f} GB")
+    print(f"    Cached    : {m.get('Cached', 0):.1f} GB")
+    print(f"    Swap Total: {m.get('SwapTotal', 0):.1f} GB")
+    print(f"    Swap Free : {m.get('SwapFree', 0):.1f} GB")
 
-if __name__ == "__main__":
-    # 1. Load your standard configuration
-    cfg = SLMConfig()
-    
-    # 2. Initialize the full 24-layer model
-    print(f"Initializing CustomTransformer with {cfg.n_layers} layers...")
-    model = CustomTransformer(cfg)
-    
-    # 3. Calculate total params
-    total_params = count_parameters(model)
-    
-    print("\n--- Parameter Tally ---")
-    print(f"Total Trainable Parameters: {total_params:,}")
-    print(f"Target Parameters:         ~209,000,000")
-    
-    # 4. Breakdown by component type for transparency
-    emb_params = model.tok_emb.weight.numel()
-    # Note: lm_head is tied to tok_emb, so it's only counted once by the loop
-    
-    # Calculate params for a single block
-    one_block = model.blocks[0]
-    block_params = sum(p.numel() for p in one_block.parameters())
-    all_blocks_params = block_params * cfg.n_layers
-    
-    print(f"\n--- Component Breakdown ---")
-    print(f"Embeddings (Tied):         {emb_params:,}")
-    print(f"Total for 24 Blocks:       {all_blocks_params:,}")
-    print(f"Per-Block Average:         {block_params:,}")
-    
-    diff = abs(total_params - 209_000_000)
-    if diff < 1_000_000:
-        print("\nVERIFICATION SUCCESS: Model matches the v5.0 Build Plan target.")
-    else:
-        print(f"\nNOTE: Model is at {total_params/1e6:.1f}M params. This is expected if 'd_model' or 'layers' were adjusted.")
-========================
-<<data_pipeline.py>>
-import os
-import gc
-import numpy as np
-from tqdm import tqdm
-from datasets import load_dataset
-from transformers import AutoTokenizer
-from huggingface_hub import login
-from config import SLMConfig
+print("=" * 60)
+print("  Deep RAM & Swap Cleaner")
+print("=" * 60)
 
-cfg = SLMConfig()
-login(token=cfg.hf_token)
+print("\nBefore:")
+print_ram("Status")
 
-tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer)
-EOS = tokenizer.eos_token_id
-assert tokenizer.vocab_size == 32_000
-print(f"Tokenizer ready. eos_id={EOS}")
+print("\n[1/4] Syncing file systems...")
+subprocess.run(["sync"], check=True)
+print("  ✓ sync done")
 
-# == Token targets =========================================
-TOTAL_TRAIN = cfg.target_tokens
-TOTAL_VAL   = cfg.validation_tokens
-ACCEPTED_PER_BATCH = 500
+print("[2/4] Dropping page cache, dentries, and inodes (Requires sudo)...")
+subprocess.run(
+    ["sudo", "sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"],
+    check=True
+)
+print("  ✓ caches dropped")
 
-# == Core loop: direct write to memmap ======================================
-def collect_tokens(ds_iter, token_target, out_path, label):
-    print(f"\n  Target: {token_target:,} tokens for [{label}] -> {out_path}")
-    mmap = np.memmap(out_path, dtype=np.uint16, mode="w+", shape=(token_target,))
-    
-    offset       = 0
-    overflow     = []
-    accepted_buf = []
+print("[3/4] Compacting physical memory...")
+subprocess.run(
+    ["sudo", "sh", "-c", "echo 1 > /proc/sys/vm/compact_memory"],
+    check=True
+)
+print("  ✓ memory compacted")
 
-    raw_seen = 0
+print("[4/4] Flushing Swapfile (This might take 10-30 seconds)...")
+try:
+    # Turning swap off forces the OS to dump stale swap data
+    subprocess.run(["sudo", "swapoff", "-a"], check=True)
+    time.sleep(2) # Give the kernel a moment to settle
+    # Turn it back on fresh
+    subprocess.run(["sudo", "swapon", "-a"], check=True)
+    print("  ✓ Swap flushed and reset to 0% used")
+except subprocess.CalledProcessError as e:
+    print(f"  ⚠ Failed to flush swap. Error: {e}")
+    print("  Ensure you have enough free physical RAM to absorb the swap contents.")
 
-    # Wrap the loop in a tqdm progress bar tracking tokens written
-    with tqdm(total=token_target, desc=f"[{label}] Tokens", unit="tok", 
-              bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]") as pbar:
-        
-        tqdm.write("  [System] Waiting for Hugging Face to stream the first document...")
-        
-        for doc in ds_iter:
-            if raw_seen == 0:
-                tqdm.write("  [System] Stream connected! Ingesting TinyStories...")
-
-            text = doc.get("text", "")
-            if not text.strip():
-                continue
-
-            raw_seen += 1
-            accepted_buf.append(text)
-            
-            # Keep UI updated so we know it's alive
-            if raw_seen % 50 == 0:
-                pbar.set_postfix(docs=raw_seen, refresh=False)
-
-            # Process a batch ONLY when the buffer is full
-            if len(accepted_buf) >= ACCEPTED_PER_BATCH:
-                
-                encoded_batch = tokenizer(accepted_buf, add_special_tokens=False)["input_ids"]
-                
-                batch_tokens = overflow
-                for seq in encoded_batch:
-                    batch_tokens.extend(seq)
-                    batch_tokens.append(EOS)
-                    
-                n_complete = len(batch_tokens) // cfg.max_seq_len
-                
-                if n_complete > 0:
-                    write_len = n_complete * cfg.max_seq_len
-                    write_tokens = batch_tokens[:write_len]
-                    overflow = batch_tokens[write_len:] 
-                    
-                    tokens_to_write = min(write_len, token_target - offset)
-                    
-                    if tokens_to_write > 0:
-                        mmap[offset : offset + tokens_to_write] = np.array(write_tokens[:tokens_to_write], dtype=np.uint16)
-                        offset += tokens_to_write
-                        mmap.flush()
-                        
-                        # Advance the main progress bar by the number of tokens written
-                        pbar.update(tokens_to_write)
-
-                accepted_buf = []
-                gc.collect()
-
-                if offset >= token_target:
-                    break
-
-        # Handle remaining overflow if we exit the loop before hitting target
-        if accepted_buf and offset < token_target:
-            encoded_batch = tokenizer(accepted_buf, add_special_tokens=False)["input_ids"]
-            batch_tokens = overflow
-            for seq in encoded_batch:
-                batch_tokens.extend(seq)
-                batch_tokens.append(EOS)
-                
-            n_complete = len(batch_tokens) // cfg.max_seq_len
-            write_len = n_complete * cfg.max_seq_len
-            tokens_to_write = min(write_len, token_target - offset)
-            
-            if tokens_to_write > 0:
-                mmap[offset : offset + tokens_to_write] = np.array(batch_tokens[:tokens_to_write], dtype=np.uint16)
-                offset += tokens_to_write
-                mmap.flush()
-                pbar.update(tokens_to_write)
-
-    del mmap
-    gc.collect()
-    
-    # Final summary
-    print(f"\n  [{label}] done. Processed {raw_seen:,} documents.")
-
-# == Run ====================================================================
-print("\n" + "=" * 55)
-print("  Phase 1 — Load raw stream (TinyStories)")
-print("=" * 55)
-ds = load_dataset(cfg.dataset, split="train", streaming=True)
-ds_iter = iter(ds)
-
-print("\n" + "=" * 55)
-print("  Phase 2 — Validation set")
-print("=" * 55)
-val_dir = os.path.dirname(cfg.validation_data)
-if val_dir:
-    os.makedirs(val_dir, exist_ok=True)
-collect_tokens(ds_iter, TOTAL_VAL, cfg.validation_data, "val")
-
-print("\n" + "=" * 55)
-print("  Phase 3 — Training set")
-print("=" * 55)
-train_dir = os.path.dirname(cfg.train_data)
-if train_dir:
-    os.makedirs(train_dir, exist_ok=True)
-collect_tokens(ds_iter, TOTAL_TRAIN, cfg.train_data, "train")
-
-# == Sanity check ===========================================================
-print("\n" + "=" * 55)
-print("  Sanity check")
-print("=" * 55)
-train_data = np.memmap(cfg.train_data, dtype=np.uint16, mode="r")
-val_data   = np.memmap(cfg.validation_data, dtype=np.uint16, mode="r")
-print(f"  train.bin : {len(train_data):,} tokens ({len(train_data)/1e9:.3f}B)")
-print(f"  val.bin   : {len(val_data):,} tokens ({len(val_data)/1e6:.1f}M)")
-print(f"  First 16 ids : {train_data[:16].tolist()}")
-
-max_id = int(train_data.max())
-status = "✓ valid" if max_id < 32_000 else "✗ INVALID — must be < 32000"
-print(f"  Max token id : {max_id}  ({status})")
-decoded = tokenizer.decode(train_data[:32].tolist())
-print(f"  Decoded      : \"{decoded}\"")
-
-if cfg.test_mode:
-    print("\n✓ Smoke test data ready.")
+print("\nAfter:")
+print_ram("Status")
+print(f"\n{'='*60}")
 ========================
 <<pretrain.py>>
 import os
@@ -285,11 +140,9 @@ def gpu_cooling_break(temp):
 def get_lr(step, total_steps, peak_lr, warmup_steps=cfg.warmup_steps):
     if step < warmup_steps:
         return peak_lr * (step + 1) / warmup_steps
-    # Stable phase: 70% of post-warmup steps at peak
     stable_end = warmup_steps + int((total_steps - warmup_steps) * 0.70)
     if step < stable_end:
         return peak_lr
-    # Decay phase: cosine from peak → 10% over final 30%
     progress = (step - stable_end) / max(1, total_steps - stable_end)
     cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
     return peak_lr * (cfg.lr_min_ratio + (1 - cfg.lr_min_ratio) * cosine)
@@ -301,13 +154,8 @@ def set_lr(optimizer, lr):
 
 
 # == Muon optimizer ============================================================
-# Muon (Momentum + Orthogonalization Update Normalisation) applies Nesterov
-# momentum then orthogonalises the update via Newton-Schulz iterations.
-# Only applied to 2D weight matrices (attention + FFN projections).
-# Embeddings, norms, and biases stay on AdamW.
 
 def zeropower_via_newtonschulz(G, steps=5):
-    """Newton-Schulz iteration to approximate G @ (G^T G)^{-1/2}."""
     assert G.ndim >= 2
     a, b, c = (3.4445, -4.7750, 2.0315)
     X = G.bfloat16() / (G.norm() + 1e-7)
@@ -322,10 +170,6 @@ def zeropower_via_newtonschulz(G, steps=5):
 
 
 class Muon(torch.optim.Optimizer):
-    """
-    Muon — for all 2D weight matrices in the transformer (Q, K, V, O, gate,
-    up, down projections). Uses Nesterov momentum + orthogonalised updates.
-    """
     def __init__(self, params, lr=0.02, momentum=0.95, ns_steps=5):
         defaults = dict(lr=lr, momentum=momentum, ns_steps=ns_steps)
         super().__init__(params, defaults)
@@ -336,39 +180,27 @@ class Muon(torch.optim.Optimizer):
             lr       = group["lr"]
             momentum = group["momentum"]
             ns_steps = group["ns_steps"]
-
             for p in group["params"]:
                 if p.grad is None:
                     continue
                 g = p.grad
                 state = self.state[p]
-
                 if "momentum_buffer" not in state:
                     state["momentum_buffer"] = torch.zeros_like(g)
-
                 buf = state["momentum_buffer"]
                 buf.mul_(momentum).add_(g)
-                # Nesterov lookahead gradient
                 g_nesterov = g + momentum * buf
-
                 if g_nesterov.ndim == 2:
                     update = zeropower_via_newtonschulz(g_nesterov, steps=ns_steps)
                     update = update * max(1, g_nesterov.size(0) / g_nesterov.size(1)) ** 0.5
                 else:
                     update = g_nesterov
-
                 p.add_(update, alpha=-lr)
 
 
 def build_optimizers(model):
-    """
-    Split parameters into two groups:
-      - Muon:  all 2D weight matrices (attention + FFN Linear layers)
-      - AdamW: everything else (embeddings, RMSNorm scales, QK-Norm scales)
-    """
     muon_params = []
     adam_params = []
-
     for name, p in model.named_parameters():
         if not p.requires_grad:
             continue
@@ -377,11 +209,9 @@ def build_optimizers(model):
             muon_params.append(p)
         else:
             adam_params.append(p)
-
     opt_muon = Muon(muon_params, lr=cfg.lr_muon, momentum=0.95)
     opt_adam = bnb.optim.AdamW8bit(adam_params, lr=cfg.lr_adam, betas=(0.9, 0.95),
                                     weight_decay=cfg.weight_decay, eps=1e-8)
-
     print(f"  Muon params : {sum(p.numel() for p in muon_params)/1e6:.1f}M")
     print(f"  AdamW params: {sum(p.numel() for p in adam_params)/1e6:.1f}M")
     return opt_muon, opt_adam
@@ -390,7 +220,6 @@ def build_optimizers(model):
 # == Data loaders ==============================================================
 
 def get_batch(data, micro_batch, seq_len, device):
-    """Random-sample a micro-batch. x = inputs, y = next-token targets."""
     ix = torch.randint(len(data) - seq_len - 1, (micro_batch,))
     x  = torch.stack([
         torch.from_numpy(data[i : i + seq_len].astype(np.int64))
@@ -401,6 +230,7 @@ def get_batch(data, micro_batch, seq_len, device):
         for i in ix
     ]).to(device)
     return x, y
+
 
 @torch.no_grad()
 def compute_val_loss(model, val_data, device, n_seqs=50):
@@ -425,6 +255,7 @@ def compute_val_loss(model, val_data, device, n_seqs=50):
     finally:
         model.train()
 
+
 # == Checkpoint helpers ========================================================
 
 def save_checkpoint(step, model, opt_muon, opt_adam, loss_history):
@@ -441,56 +272,116 @@ def save_checkpoint(step, model, opt_muon, opt_adam, loss_history):
     _prune_checkpoints()
 
 
+def save_best_model(step, val_loss, model):
+    """Save a separate best model checkpoint — never pruned."""
+    os.makedirs(cfg.ckpt_dir, exist_ok=True)
+    path = os.path.join(cfg.ckpt_dir, "best_model.pt")
+    torch.save({
+        "step":     step,
+        "val_loss": val_loss,
+        "model":    model.state_dict(),
+    }, path)
+    print(f"  ★ Best model saved → {path}  (val_loss={val_loss:.4f} @ step {step})")
+
+
 def _prune_checkpoints():
-    """Keep only the most recent cfg.keep_ckpts checkpoints."""
-    ckpts = sorted(glob.glob(os.path.join(cfg.ckpt_dir, "ckpt_*.pt")))
+    ckpts = glob.glob(os.path.join(cfg.ckpt_dir, "ckpt_*.pt"))
+    # Sort by actual file creation/modification time
+    ckpts.sort(key=os.path.getmtime) 
     for old in ckpts[:-cfg.keep_ckpts]:
         os.remove(old)
         print(f"  ✗ Deleted old checkpoint: {old}")
 
 
 def load_latest_checkpoint(model, opt_muon, opt_adam):
-    """Load the most recent checkpoint. Returns (start_step, loss_history)."""
-    ckpts = sorted(glob.glob(os.path.join(cfg.ckpt_dir, "ckpt_*.pt")))
+    ckpts = glob.glob(os.path.join(cfg.ckpt_dir, "ckpt_*.pt"))
     if not ckpts:
         print("  No checkpoint found — starting from scratch.")
         return 0, []
-
+    
+    # Sort by actual file creation/modification time
+    ckpts.sort(key=os.path.getmtime)
     path = ckpts[-1]
+    
     print(f"  Resuming from {path}")
-    # weights_only=True is safer against arbitrary pickle execution (PyTorch 2.4+)
     ckpt = torch.load(path, map_location="cuda", weights_only=False)
-
     model.load_state_dict(ckpt["model"])
     opt_muon.load_state_dict(ckpt["opt_muon"])
     opt_adam.load_state_dict(ckpt["opt_adam"])
     loss_history = ckpt.get("loss_history", [])
-
     print(f"  Resumed at step {ckpt['step']}")
     return ckpt["step"], loss_history
+
+
+def load_best_val_loss():
+    """Read the best val loss from existing best_model.pt if it exists."""
+    path = os.path.join(cfg.ckpt_dir, "best_model.pt")
+    if os.path.exists(path):
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        return ckpt.get("val_loss", float("inf"))
+    return float("inf")
 
 
 # == CSV logger ================================================================
 
 def init_log(resume):
-    """Create or append to the training log CSV."""
     if not resume or not os.path.exists(cfg.log_file):
         with open(cfg.log_file, "w", newline="") as f:
             writer = csv.writer(f)
-            # val_loss column added
             writer.writerow(["step", "train_loss", "val_loss", "ppl",
-                             "lr_muon", "lr_adam", "tokens_seen", "elapsed_s"])
+                             "lr_muon", "lr_adam", "tokens_seen", "elapsed_s",
+                             "best_val_loss", "patience_counter"])
     return open(cfg.log_file, "a", newline="")
 
 
-def write_log(log_f, step, train_loss, val_loss, ppl, lr_m, lr_a, tokens_seen, elapsed):
+def write_log(log_f, step, train_loss, val_loss, ppl, lr_m, lr_a,
+              tokens_seen, elapsed, best_val_loss, patience_counter):
     writer = csv.writer(log_f)
-    val_str = f"{val_loss:.4f}" if not math.isnan(val_loss) else "n/a"
+    val_str  = f"{val_loss:.4f}"      if not math.isnan(val_loss)      else "n/a"
+    best_str = f"{best_val_loss:.4f}" if best_val_loss < float("inf")  else "n/a"
     writer.writerow([step, f"{train_loss:.4f}", val_str, f"{ppl:.2f}",
-                     f"{lr_m:.2e}", f"{lr_a:.2e}", tokens_seen, f"{elapsed:.1f}"])
+                     f"{lr_m:.2e}", f"{lr_a:.2e}", tokens_seen,
+                     f"{elapsed:.1f}", best_str, patience_counter])
     log_f.flush()
 
 
+# == Early stopping ============================================================
+
+class EarlyStopping:
+    """
+    Monitors val_loss. 
+    Allows the model to flatline indefinitely.
+    ONLY stops if the loss actively degrades (increases) for `patience` consecutive checks.
+    """
+    def __init__(self, patience=15, tolerance=0.05):
+        self.patience    = patience
+        self.tolerance   = tolerance # How much it can bounce up without counting as "diverging"
+        self.best_loss   = float("inf")
+        self.counter     = 0
+        self.should_stop = False
+
+    def update(self, val_loss):
+        # 1. Did it hit a new personal best?
+        if val_loss < self.best_loss:
+            self.best_loss = val_loss
+            self.counter   = 0
+            return True   # improved → save best model
+            
+        # 2. Is it flatlining or just bouncing slightly? (Safe Zone)
+        elif val_loss <= self.best_loss + self.tolerance:
+            self.counter = 0 # Reset counter, we are still stable
+            return False
+            
+        # 3. Is it actively diverging/getting worse? (Danger Zone)
+        else:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.should_stop = True
+            return False
+
+    def status(self):
+        return f"divergence strikes {self.counter}/{self.patience} | best_val={self.best_loss:.4f}"
+    
 # == Main training loop ========================================================
 
 def main():
@@ -501,50 +392,51 @@ def main():
     print(f"  dtype  : bfloat16")
     print(f"{'='*60}\n")
 
-    # == Compute total steps from token budget =================================
     tokens_per_step = cfg.micro_batch * cfg.grad_accum * cfg.max_seq_len
     total_steps     = cfg.target_tokens // tokens_per_step
-    print(f"  Token budget  : {cfg.target_tokens/1e9:.1f}B")
-    print(f"  Tokens/step   : {tokens_per_step:,}")
-    print(f"  Total steps   : {total_steps:,}")
-    print(f"  Warmup steps  : {cfg.warmup_steps}")
-    print(f"  Save every    : {cfg.save_every} steps  (rolling {cfg.keep_ckpts} kept)")
-    print(f"  Break every   : {cfg.break_every_steps} steps ({cfg.cooling_break_s//60} min cool-down)\n")
+    print(f"  Token budget     : {cfg.target_tokens/1e9:.1f}B")
+    print(f"  Tokens/step      : {tokens_per_step:,}")
+    print(f"  Total steps      : {total_steps:,}")
+    print(f"  Warmup steps     : {cfg.warmup_steps}")
+    print(f"  Save every       : {cfg.save_every} steps  (rolling {cfg.keep_ckpts} kept)")
+    print(f"  Val every        : {cfg.val_every} steps")
+    print(f"  Early stop       : patience={cfg.early_stopping_patience}, "
+          f"min_delta={cfg.early_stopping_min_delta}\n")
 
-    # == Load data =============================================================
     assert os.path.exists(cfg.train_data), \
-        f"train.bin not found at '{cfg.train_data}'. Run data_pipeline.py first."
+        f"train.bin not found at '{cfg.train_data}'. Run data pipeline first."
     assert os.path.exists(cfg.validation_data), \
-        f"val.bin not found at '{cfg.validation_data}'. Run data_pipeline.py first."
+        f"val.bin not found at '{cfg.validation_data}'. Run data pipeline first."
 
     data     = np.memmap(cfg.train_data,      dtype=np.uint16, mode="r")
     val_data = np.memmap(cfg.validation_data, dtype=np.uint16, mode="r")
     print(f"  train.bin : {len(data)/1e9:.3f}B tokens")
     print(f"  val.bin   : {len(val_data)/1e6:.1f}M tokens\n")
 
-    # == Build model ===========================================================
     model = CustomTransformer(cfg).to(device).to(torch.bfloat16)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"  Model params  : {total_params/1e6:.1f}M\n")
 
-    # torch.compile gives ~20% throughput on Ada Lovelace (RTX 4060)
     print("  Compiling model (first run ~60s)...")
     model = torch.compile(model)
     print("  Compile done.\n")
 
-    # == Build optimizers ======================================================
     print("  Building optimizers...")
     opt_muon, opt_adam = build_optimizers(model)
 
-    # == Resume if checkpoint exists ===========================================
     start_step, loss_history = load_latest_checkpoint(model, opt_muon, opt_adam)
     resume      = start_step > 0
     tokens_seen = start_step * tokens_per_step
 
-    # == Init logging ==========================================================
     log_f = init_log(resume)
 
-    # == Training loop =========================================================
+    # == Early stopping setup ==================================================
+    early_stop = EarlyStopping()
+    # Restore best val loss from disk if resuming
+    early_stop.best_loss = load_best_val_loss()
+    if early_stop.best_loss < float("inf"):
+        print(f"  Restored best val loss: {early_stop.best_loss:.4f}")
+
     model.train()
     opt_muon.zero_grad()
     opt_adam.zero_grad()
@@ -559,28 +451,21 @@ def main():
 
     for global_step in range(start_step, total_steps):
 
-        # == LR schedule =======================================================
         lr_m = get_lr(global_step, total_steps, cfg.lr_muon)
         lr_a = get_lr(global_step, total_steps, cfg.lr_adam)
         set_lr(opt_muon, lr_m)
         set_lr(opt_adam, lr_a)
 
-        # == Gradient accumulation =============================================
         for _ in range(cfg.grad_accum):
             x, y = get_batch(data, cfg.micro_batch, cfg.max_seq_len, device)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 logits  = model(x)
                 ce_loss = F.cross_entropy(logits.view(-1, cfg.vocab_size), y.view(-1))
-                # z-loss: prevents logit magnitudes from growing unboundedly over
-                # long runs. Used in PaLM, Gemma, Baichuan. Coefficient 1e-4 is
-                # small enough to not affect language modelling, large enough to
-                # keep the residual stream stable across 4B tokens.
                 z_loss  = 1e-4 * logits.logsumexp(-1).pow(2).mean()
                 loss    = (ce_loss + z_loss) / cfg.grad_accum
             loss.backward()
             accum_loss += loss.item()
 
-        # == Optimizer step ====================================================
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         opt_muon.step()
         opt_adam.step()
@@ -590,6 +475,38 @@ def main():
         tokens_seen += tokens_per_step
         loss_history.append(accum_loss)
 
+        # == Validation + early stopping check =================================
+        val_loss = float("nan")
+        if global_step % cfg.val_every == 0 and global_step > 0:
+            val_loss  = compute_val_loss(model, val_data, device)
+            improved  = early_stop.update(val_loss)
+
+            if improved:
+                # New best — save dedicated best_model.pt (never pruned)
+                save_best_model(global_step, val_loss, model)
+
+            status_str = (
+                f"  step {global_step:5d}/{total_steps}"
+                f" | train {accum_loss:.4f}"
+                f" | val {val_loss:.4f}"
+                f" | ppl {math.exp(min(accum_loss, 20)):7.2f}"
+                f" | lr_m {lr_m:.1e}"
+                f" | {tokens_seen/1e9:.3f}B tok"
+                f" | {early_stop.status()}"
+                f" | {'★ NEW BEST' if improved else ''}"
+            )
+            print(status_str)
+
+            if early_stop.should_stop:
+                print(f"\n{'='*60}")
+                print(f"  ⏹ Early stopping triggered at step {global_step}.")
+                print(f"  No val_loss improvement for {early_stop.patience} checks.")
+                print(f"  Best val_loss: {early_stop.best_loss:.4f}")
+                print(f"  Best model  : {cfg.ckpt_dir}/best_model.pt")
+                print(f"{'='*60}\n")
+                save_checkpoint(global_step, model, opt_muon, opt_adam, loss_history)
+                break
+
         # == Logging ===========================================================
         if global_step % cfg.log_every == 0:
             ppl     = math.exp(min(accum_loss, 20))
@@ -597,20 +514,7 @@ def main():
             tok_s   = (cfg.log_every * tokens_per_step) / elapsed if global_step > 0 else 0
             t0      = time.time()
 
-            # Validation loss every 500 steps (~25 min apart at RTX 4060 speed)
-            val_loss = float("nan")
-            if global_step % 500 == 0:
-                val_loss = compute_val_loss(model, val_data, device)
-                print(
-                    f"  step {global_step:5d}/{total_steps}"
-                    f" | train {accum_loss:.4f}"
-                    f" | val {val_loss:.4f}"
-                    f" | ppl {ppl:7.2f}"
-                    f" | lr_m {lr_m:.1e}"
-                    f" | {tokens_seen/1e9:.3f}B tok"
-                    f" | {tok_s/1e3:.1f}k tok/s"
-                )
-            else:
+            if math.isnan(val_loss):  # no val this step — print train only
                 print(
                     f"  step {global_step:5d}/{total_steps}"
                     f" | loss {accum_loss:.4f}"
@@ -621,7 +525,8 @@ def main():
                 )
 
             write_log(log_f, global_step, accum_loss, val_loss, ppl,
-                      lr_m, lr_a, tokens_seen, time.time() - start_time)
+                      lr_m, lr_a, tokens_seen, time.time() - start_time,
+                      early_stop.best_loss, early_stop.counter)
 
         # == Checkpoint + thermal check ========================================
         if global_step % cfg.save_every == 0 and global_step > start_step:
@@ -633,10 +538,7 @@ def main():
             gpu_cooling_break(temp)
 
         # == Mandatory cooling break ===========================================
-        # Separate from save_every so it always fires at the 2000-step mark
-        # even if that step was already a checkpoint step.
         if global_step % cfg.break_every_steps == 0 and global_step > 0:
-            # Only save if this step wasn't just saved by the checkpoint block
             if global_step % cfg.save_every != 0:
                 save_checkpoint(global_step, model, opt_muon, opt_adam, loss_history)
             print(f"\n⏸ Mandatory break at step {global_step} — {cfg.cooling_break_s//60} min cool-down")
@@ -647,17 +549,20 @@ def main():
 
         accum_loss = 0.0
 
-    # == Final checkpoint ======================================================
-    save_checkpoint(total_steps, model, opt_muon, opt_adam, loss_history)
+    else:
+        # == Final checkpoint (only if training completed without early stop) ==
+        save_checkpoint(total_steps, model, opt_muon, opt_adam, loss_history)
+
     log_f.close()
 
     total_time = time.time() - start_time
     print(f"\n{'='*60}")
     print(f"  Pre-training complete!")
-    print(f"  Total time  : {total_time/3600:.2f} hours")
-    print(f"  Tokens seen : {tokens_seen/1e9:.3f}B")
-    print(f"  Final loss  : {loss_history[-1]:.4f}")
-    print(f"  Final ckpt  : checkpoints/ckpt_{total_steps:05d}.pt")
+    print(f"  Total time    : {total_time/3600:.2f} hours")
+    print(f"  Tokens seen   : {tokens_seen/1e9:.3f}B")
+    print(f"  Final loss    : {loss_history[-1]:.4f}")
+    print(f"  Best val loss : {early_stop.best_loss:.4f}")
+    print(f"  Best model    : {cfg.ckpt_dir}/best_model.pt")
     print(f"{'='*60}\n")
 
 
@@ -822,19 +727,19 @@ from dataclasses import dataclass
 class SLMConfig:
     # == Model ==
     vocab_size:         int = 32_000
-    d_model:            int = 768                                           # Size of vector representing each token
-    n_layers:           int = 24                                            # Number of transformer blocks
-    n_heads:            int = 12                                            # Number of query heads
+    d_model:            int = 1024                                          # Size of vector representing each token
+    n_layers:           int = 36                                            # Number of transformer blocks
+    n_heads:            int = 16                                            # Number of query heads
     n_kv_heads:         int = 4                                             # Number of key, value heads (Group Query Attention)
-    ffn_dim:            int = 2048                                          # Size of hidden layer in FeedForward network
+    ffn_dim:            int = 3072                                          # Size of hidden layer in FeedForward network
     max_seq_len:        int = 4096                                          # Maximum context window
     rope_theta:         float = 500_000.0                                   # Base frequency for rotary embeddings
     norm_eps:           float = 1e-5
 
     # == Dataset ==
-    test_mode:          bool = True
-    target_tokens:      int = 20_000_000                                    # 20M tokens
-    validation_tokens:  int = 5_000_000                                     # 5M held-out for validation
+    test_mode:          bool = False
+    target_tokens:      int = 4_000_000_000                                 # 4B tokens
+    validation_tokens:  int = 20_000_000                                    # 20M held-out for validation
     hf_token:           str = '<HF_TOKEN>'
     # dataset:            str = 'HuggingFaceTB/dclm-edu'
     dataset:            str = 'roneneldan/TinyStories'
@@ -845,8 +750,8 @@ class SLMConfig:
     batched_dir:        str = 'batches'
 
     # == Training hyperparameters ==
-    micro_batch:        int = 2                                             # Sequences per GPU step
-    grad_accum:         int = 96                                            # Steps before optimizer update | effective batch = 2 × 96 × 4096 = 786,432 tokens/step
+    micro_batch:        int = 1                                             # Sequences per GPU step
+    grad_accum:         int = 32                                            # Steps before optimizer update | effective batch = 1 × 96 × 4096 = 786,432 tokens/step
     lr_muon:            float = 0.02                                        # Muon peak LR (matrix weights)
     lr_adam:            float = 3e-4                                        # AdamW peak LR (embeddings, norms, biases)
     lr_min_ratio:       float = 0.1                                         # Cosine decays to 10% of peak
@@ -860,9 +765,14 @@ class SLMConfig:
     log_file:           str = 'training_log.csv'
 
     # Thermal management
-    gpu_temp_threshold: int = 85                                            # pause if GPU hits this (°C)
+    gpu_temp_threshold: int = 78                                            # pause if GPU hits this (°C)
     cooling_break_s:    int = 600                                           # 10 min cool-down
     break_every_steps:  int = 2000                                          # mandatory break regardless of temp
+
+    # == Early stopping ==
+    val_every:                  int   = 100                                 # run validation every N steps
+    early_stopping_patience:    int   = 5000                                # stop if no improvement for 15 val checks
+    early_stopping_min_delta:   float = 0.001                               # minimum improvement to count as better
 ========================
 <<model_architecture.py>>
 import torch
@@ -963,65 +873,6 @@ def main():
 if __name__ == "__main__":
     main()
 
-========================
-<<check_capacity.py>>
-import subprocess
-import os
-
-def check_hardware():
-    print("🔍 Scanning Pop!_OS Hardware for ML Training...\n")
-    print("-" * 50)
-    
-    # 1. Check GPU / VRAM
-    try:
-        # Calls nvidia-smi natively on Linux
-        nvidia_smi = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=name,memory.total,memory.free", "--format=csv,noheader"], 
-            encoding='utf-8'
-        ).strip().split('\n')
-        
-        for i, gpu in enumerate(nvidia_smi):
-            name, total_ram, free_ram = gpu.split(', ')
-            total_mb = int(total_ram.replace(' MiB', ''))
-            print(f"🖥️  GPU {i}: {name}")
-            print(f"📊 Total VRAM: {total_mb} MB")
-            
-            # MATH FOR MODEL SIZE:
-            # We reserve 20% of VRAM for batch size, context window, and system overhead.
-            usable_vram_mb = total_mb * 0.8
-            usable_vram_bytes = usable_vram_mb * 1024 * 1024
-            
-            # Rule of thumb for full training (fp16/bf16 + AdamW): ~18 bytes per parameter
-            max_params_full = usable_vram_bytes / 18
-            
-            # Rule of thumb for LoRA fine-tuning: ~6 bytes per parameter
-            max_params_lora = usable_vram_bytes / 6
-            
-            print(f"  -> Max Model Size (Full Pre-training): ~{max_params_full / 1e6:.0f} Million parameters")
-            print(f"  -> Max Model Size (LoRA Fine-tuning): ~{max_params_lora / 1e6:.0f} Million parameters\n")
-            
-    except FileNotFoundError:
-        print("❌ No NVIDIA GPU detected or nvidia-smi not installed.")
-        print("Training locally will rely on CPU, which is highly impractical for building an SLM from scratch.\n")
-
-    # 2. Check System RAM (Crucial for loading datasets)
-    try:
-        with open('/proc/meminfo', 'r') as f:
-            meminfo = f.readlines()
-        total_ram_kb = int([line for line in meminfo if 'MemTotal' in line][0].split()[1])
-        total_ram_gb = total_ram_kb / (1024 * 1024)
-        print(f"🧠 System RAM: {total_ram_gb:.1f} GB")
-        if total_ram_gb < 16:
-            print("  ⚠️ Warning: Less than 16GB RAM might bottleneck dataset tokenization.")
-        else:
-            print("  ✅ System RAM looks sufficient for data loading pipelines.\n")
-    except Exception:
-        print("Could not read system RAM.\n")
-        
-    print("-" * 50)
-
-if __name__ == "__main__":
-    check_hardware()
 ========================
 <<ffn.py>>
 import torch
@@ -1132,7 +983,11 @@ from config import SLMConfig
 
 cnfg = SLMConfig()
 
-SKIP_DIRS = {".venv", "venv", "env", "__pycache__", ".git", "node_modules", "site-packages", ".mypy_cache", ".tox"}
+SKIP_DIRS = {".venv", "venv", "env", "__pycache__", ".git", 
+             "node_modules", "site-packages", ".mypy_cache", ".tox", 
+             "base_models", "batches", "checkpoints", "data", "data copy",
+             "data_bkp", "other", "plan", "training_artifacts"
+            }
 
 def consolidate_py_files(root_folder, output_file="consolidated.txt"):
     with open(output_file, "w", encoding="utf-8") as out:
@@ -1154,6 +1009,6 @@ def consolidate_py_files(root_folder, output_file="consolidated.txt"):
 
 if __name__ == "__main__":
     root = "/home/prathamesh/Data-Science/SLM/"
-    output = "consolidated.txt"
+    output = "codebase.txt"
     consolidate_py_files(root, output)
 ========================

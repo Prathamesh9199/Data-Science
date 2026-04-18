@@ -1,0 +1,1234 @@
+
+=================================================================
+  SLM Base Model Evaluation
+  Training data: cosmopedia | dclm-edu | dolmino |
+                 openwebmath | pes2o | stackexchange
+  Evaluation   : fully independent — no val.bin used
+=================================================================
+  Loading : checkpoints/best_model.pt
+  Params  : 467.0M
+  Best val_loss : 1.4107  (ppl 4.10)
+
+=================================================================
+  SECTION 1 — Generation Quality (Domain-Appropriate Prompts)
+=================================================================
+
+  [educational_explanation]
+  PROMPT : Explain why the sky is blue. Include the relevant physics concept.
+  OUTPUT : 
+
+1.2.1 The Earth is a flat disc.
+
+1.2.2 The Earth is a sphere.
+
+1.3.1 The Earth is a sphere.
+
+1.3.2 The Earth is a sphere.
+
+1.3.3 The Earth is a sphere.
+
+1.3.4 The Earth is a sphere.
+
+1.4.1 The Earth is a sphere.
+
+1.4.2 The Earth is a sphere.
+
+1.4.3 The Earth is a sphere.
+
+1.4.4 The Earth is a sphere.
+
+1.4.5 The Earth is a sphere.
+
+1.5.1 The Earth is a sphere.
+
+1.5.2 The Earth is a sphere.
+
+1.5.3
+  rep=0.303  ttr=0.250  kw_coverage=0%  words=92
+
+  [concept_explanation]
+  PROMPT : What is the difference between supervised and unsupervised learning in machine learning?
+  OUTPUT : 
+
+• A supervised learning algorithm is one that learns from labeled data.
+
+• A unsupervised learning algorithm is one that learns from unlabeled data.
+
+• A supervised learning algorithm is one that learns from unlabeled data.
+
+• A supervised learning algorithm is one that learns from unlabeled data.
+
+• A supervised learning algorithm is one that learns from unlabeled data.
+
+• A supervised learning
+  rep=0.840  ttr=0.109  kw_coverage=40%  words=128
+
+  [scientific_prose]
+  PROMPT : The process of photosynthesis converts light energy into chemical energy. Describe the two
+  OUTPUT : 
+
+
+The sun provides energy to the plants and animals. The energy produced from sunlight is used to produce energy. The process of photosynthesis is called photosynthesis.
+
+
+The photosynthesis process involves the use of light energy to convert chemical energy into chemical energy. The process of photosynthesis is called photosynthesis.
+
+
+The photosynthesis process involves the use of light energy 
+  rep=0.445  ttr=0.238  kw_coverage=17%  words=122
+
+  [technical_qa]
+  PROMPT : Q: What is the difference between a stack and a queue data structure?
+A:
+  OUTPUT : 
+Q: What is the difference between a stack and a queue data structure?
+A:
+Q: What is the difference between a stack and a queue data structure?
+A:
+Q: What is the difference between a stack and a queue data structure?
+A:
+Q: What is the difference between a stack and a queue data structure?
+A:
+Q: What is the difference between a stack and a queue data structure?
+A:
+Q: What is the difference between 
+  rep=0.903  ttr=0.088  kw_coverage=0%  words=148
+
+  [programming_qa]
+  PROMPT : Q: Why does floating point arithmetic sometimes give unexpected results in programming?
+A:
+  OUTPUT : I have a question about that. It seems that floating point arithmetic is not as good as it could be, especially for real-world problems. Is there a reason that floating point arithmetic gives a very different result in real-world programming than in computer science?
+
+
+2. Thanks for the reply. I think it might be that the answer is not in the book but in the book it is in the book.
+
+3. I just came
+  rep=0.227  ttr=0.401  kw_coverage=20%  words=157
+
+  [math_exposition]
+  PROMPT : Explain the intuition behind the Pythagorean theorem and why a² + b² = c² holds for right 
+  OUTPUT : 
+
+3. **Define the Pythagorean Theorem.**
+
+To begin, let us recall the Pythagorean theorem, which states that:
+
+$$
+\text{base} + \text{height} = \sqrt{a^2 + b^2}
+$$
+
+This formula is derived from the Pythagorean theorem, which states that:
+
+$$
+\sqrt{a^2 + b^2} = \sqrt{a^2 + b^2}
+$$
+
+In this case, a = 5, b = 1, and c = 3.
+
+4. **Understand the Pythagorean Theorem.**
+
+The Pythagorean theorem states tha
+  rep=0.200  ttr=0.494  kw_coverage=0%  words=83
+
+  [analytical_writing]
+  PROMPT : What are the main causes of inflation and how does raising interest rates help control it?
+  OUTPUT : 3. What are the main causes of inflation and why is it important? 4. Why is the economy so vulnerable to inflation? 5. What are the main causes of deflation? What are the main causes of inflation? 6. Why is the economy so vulnerable to inflation? What are the main causes of deflation? 7. What are the main causes of inflation? What are the main causes of deflation? What are the main causes of infla
+  rep=0.627  ttr=0.173  kw_coverage=0%  words=156
+
+  --- Aggregate ---
+  Avg repetition   : 0.507  (target <0.05)
+  Avg TTR          : 0.250  (target >0.55)
+  Avg kw_coverage  : 11%  (target >50%)
+
+=================================================================
+  SECTION 2 — Multiple Choice (Log-Prob Scoring, No External Judge)
+=================================================================
+
+  ── ELEMENTARY MATH ──
+  ✗  Q: If a train travels 60 miles per hour for 2.5 hours, how far does it travel?
+      Predicted: [0] 100 miles
+      Correct  : [2] 150 miles
+      Scores   : [0]-2.91  [1]-3.12  [2]-3.12  [3]-3.27
+  ✗  Q: What is 15% of 240?
+      Predicted: [3] 24
+      Correct  : [1] 36
+      Scores   : [0]-4.28  [1]-4.25  [2]-4.16  [3]-3.64
+  ✗  Q: A rectangle has length 8 and width 5. What is its area?
+      Predicted: [1] 13
+      Correct  : [2] 40
+      Scores   : [0]-4.12  [1]-3.86  [2]-4.31  [3]-4.25
+  ✗  Q: If 3x + 7 = 22, what is x?
+      Predicted: [0] 3
+      Correct  : [2] 5
+      Scores   : [0]-4.25  [1]-4.44  [2]-4.88  [3]-5.00
+  ✗  Q: What is the square root of 144?
+      Predicted: [3] 14
+      Correct  : [1] 12
+      Scores   : [0]-3.22  [1]-3.09  [2]-3.27  [3]-2.67
+  Accuracy: 0/5 = 0%
+
+  ── ALGEBRA AND REASONING ──
+  ✗  Q: If f(x) = 2x² - 3x + 1, what is f(2)?
+      Predicted: [0] 1
+      Correct  : [1] 3
+      Scores   : [0]-4.25  [1]-4.69  [2]-5.25  [3]-5.38
+  ✗  Q: A car depreciates 20% per year. If it costs $10,000 today, what is it worth afte
+      Predicted: [3] $8,000
+      Correct  : [1] $6,400
+      Scores   : [0]-2.91  [1]-3.41  [2]-3.55  [3]-2.80
+  ✗  Q: Two numbers sum to 50. One is twice the other. What is the smaller number?
+      Predicted: [0] 10
+      Correct  : [2] 16.7
+      Scores   : [0]-3.34  [1]-3.52  [2]-3.47  [3]-3.72
+  ✗  Q: If log₂(x) = 5, what is x?
+      Predicted: [0] 10
+      Correct  : [2] 32
+      Scores   : [0]-3.48  [1]-3.91  [2]-4.19  [3]-4.44
+  Accuracy: 0/4 = 0%
+
+  ── LOGICAL DEDUCTION ──
+  ✓  Q: All mammals are warm-blooded. Dolphins are mammals. Which must be true?
+      Predicted: [1] Dolphins are warm-blooded
+      Scores   : [0]-4.41  [1]-2.16  [2]-2.84  [3]-4.06
+  ✗  Q: If it rains, the match is cancelled. The match was not cancelled. What can we co
+      Predicted: [2] The match was played indoors
+      Correct  : [1] It did not rain
+      Scores   : [0]-5.78  [1]-4.91  [2]-3.73  [3]-5.19
+  ✗  Q: Some A are B. All B are C. Which statement must be true?
+      Predicted: [0] All A are C
+      Correct  : [1] Some A are C
+      Scores   : [0]-3.78  [1]-4.03  [2]-4.19  [3]-4.38
+  ✗  Q: In a race, Alice finished before Bob. Bob finished before Carol. Who finished la
+      Predicted: [3] Cannot be determined
+      Correct  : [2] Carol
+      Scores   : [0]-9.50  [1]-10.00  [2]-12.81  [3]-5.09
+  ✓  Q: If all doctors are scientists and some scientists are writers, which is definite
+      Predicted: [3] None of the above must be true
+      Scores   : [0]-4.53  [1]-4.91  [2]-5.41  [3]-3.31
+  Accuracy: 2/5 = 40%
+
+  ── SCIENTIFIC REASONING ──
+  ✓  Q: A scientist doubles the concentration of a reactant. The reaction rate quadruple
+      Predicted: [2] Second order
+      Scores   : [0]-10.38  [1]-8.88  [2]-8.56  [3]-9.50
+  ✗  Q: An object in space continues moving at constant velocity. Which law explains thi
+      Predicted: [0] Newton's Second Law
+      Correct  : [1] Newton's First Law
+      Scores   : [0]-2.81  [1]-2.92  [2]-3.00  [3]-3.62
+  ✗  Q: Which process converts glucose into pyruvate without using oxygen?
+      Predicted: [1] Oxidative phosphorylation
+      Correct  : [2] Glycolysis
+      Scores   : [0]-5.72  [1]-2.33  [2]-3.47  [3]-2.69
+  ✗  Q: The half-life of a radioactive substance is 10 years. After 30 years, what fract
+      Predicted: [0] 1/2
+      Correct  : [2] 1/8
+      Scores   : [0]-2.80  [1]-2.98  [2]-3.41  [3]-2.81
+  ✓  Q: What property of water makes it an excellent solvent for ionic compounds?
+      Predicted: [1] Polar molecule with partial charges
+      Scores   : [0]-5.38  [1]-4.44  [2]-5.22  [3]-7.75
+  Accuracy: 2/5 = 40%
+
+  ── COMPUTER SCIENCE ──
+  ✗  Q: What is the time complexity of binary search on a sorted array of n elements?
+      Predicted: [3] O(n log n)
+      Correct  : [1] O(log n)
+      Scores   : [0]-3.84  [1]-3.20  [2]-3.58  [3]-2.59
+  ✗  Q: Which data structure uses LIFO (Last In First Out) ordering?
+      Predicted: [0] Queue
+      Correct  : [1] Stack
+      Scores   : [0]-7.34  [1]-12.44  [2]-7.44  [3]-8.38
+  ✗  Q: In TCP/IP, which layer is responsible for end-to-end communication and error che
+      Predicted: [1] Data link layer
+      Correct  : [2] Transport layer
+      Scores   : [0]-7.50  [1]-7.00  [2]-8.12  [3]-8.12
+  ✗  Q: What does SQL SELECT DISTINCT do?
+      Predicted: [3] Joins two tables
+      Correct  : [1] Removes duplicate rows from results
+      Scores   : [0]-6.88  [1]-5.09  [2]-6.16  [3]-5.00
+  ✓  Q: Which sorting algorithm has the best average-case time complexity?
+      Predicted: [1] Merge sort O(n log n)
+      Scores   : [0]-3.73  [1]-3.14  [2]-3.53  [3]-4.44
+  Accuracy: 1/5 = 20%
+
+  ── MULTI STEP WORD PROBLEMS ──
+  ✓  Q: A store sells apples for $0.50 each and oranges for $0.75 each. Maria buys 4 app
+      Predicted: [1] $0.75
+      Scores   : [0]-3.05  [1]-2.80  [2]-3.34  [3]-3.36
+  ✓  Q: A tank fills in 6 hours when pipe A is open. Pipe B alone fills it in 12 hours. 
+      Predicted: [1] 4 hours
+      Scores   : [0]-5.09  [1]-4.19  [2]-4.56  [3]-4.81
+  ✗  Q: A recipe for 4 people requires 2 cups of flour. You want to make it for 10 peopl
+      Predicted: [0] 4 cups
+      Correct  : [1] 5 cups
+      Scores   : [0]-3.94  [1]-4.44  [2]-4.56  [3]-4.66
+  ✓  Q: A car gets 35 miles per gallon. Gas costs $3.50 per gallon. How much does a 350-
+      Predicted: [2] $35
+      Scores   : [0]-5.16  [1]-4.91  [2]-4.88  [3]-5.22
+  Accuracy: 3/4 = 75%
+
+  ── READING COMPREHENSION AND INFERENCE ──
+  ✗  Q: Passage: 'The vaccine reduced infection rates by 85% in clinical trials. However
+      Predicted: [3] Strong immunity vs. side effects
+      Correct  : [1] High effectiveness vs. difficult distribution
+      Scores   : [0]-4.66  [1]-6.72  [2]-6.47  [3]-4.50
+  ✗  Q: Passage: 'Company X's revenue grew 40% last year while expenses grew 60%. The CE
+      Predicted: [3] Nothing is misleading
+      Correct  : [1] Revenue grew but profitability likely fell
+      Scores   : [0]-5.00  [1]-5.81  [2]-5.03  [3]-4.69
+  ✓  Q: Passage: 'Nations that adopted coal as their primary energy source in the 1800s 
+      Predicted: [2] Rapid development can come with health costs
+      Scores   : [0]-7.22  [1]-5.78  [2]-4.97  [3]-5.28
+  Accuracy: 1/3 = 33%
+
+  ========================================
+  OVERALL MC ACCURACY : 9/31 = 29%
+
+=================================================================
+  SECTION 3 — Chain-of-Thought Reasoning
+=================================================================
+
+  [arithmetic_word_problem]
+  PROMPT : Q: A factory produces 240 widgets per day. It operates 6 days a week. How many widgets does it produce in 4 weeks?
+A: Let's think step by step.
+
+  [Sampling output]
+  A: If we take 120 widgets, we have 240 x 120 = 1600 widgets.
+
+B: We know that the number of widgets produced in 4 weeks is 1600, so we can write this as:
+
+1600/120 = 120
+
+120 x 120 = 2400
+
+So, we have 2400 widgets.
+
+120 x 2400 = 3600
+
+So, we have 3600 widgets.
+
+120 x 3600 = 6000
+
+So, we have 6000 widgets.
+
+2400 widgets = 120 x 120 = 24000
+
+So, we have 24000 widgets.
+
+2400 x 2400 = 12000
+
+So, we have 12000 widgets.
+
+2400 x 2400 = 36000
+
+So, we have 36000 widgets.
+
+3600 x 3600 = 60000
+  score=2/4  steps=0  kw=67%  has_answer=False  degenerate=False  correct_ans=✗
+
+  [Greedy output]
+  Step 1:
+
+Given that the number of widgets produced in 4 weeks is 240,
+
+we can write the number of widgets produced in 4 weeks as 240/4 = 160.
+
+Step 2:
+
+We can write the number of widgets produced in 4 weeks as 160/4 = 160.
+
+Step 3:
+
+We can write the number of widgets produced in 4 weeks as 160/4 = 160.
+
+Step 4:
+
+We can write the number of widgets produced in 4 weeks as 160/4 = 160.
+
+Step 5:
+
+We can write the number of widgets produced in 4 weeks as 160/4 = 160.
+
+Step 6:
+
+We can write the number 
+  score=2/4  steps=9  kw=67%  has_answer=False  degenerate=True  correct_ans=✗
+
+  [percentage_reasoning]
+  PROMPT : Q: A jacket originally costs $80. It is on sale for 25% off. After the discount, a 10% tax is applied. What is the final price?
+A: Let's think step by step.
+
+  [Sampling output]
+  Step 1: Calculate the cost of the jacket.
+Cost = (80 - 25) = $80
+Cost = $80 - 25 = $20
+
+Step 2: Calculate the cost of the jacket.
+Cost = (80 - 25) = $20
+Cost = $20 - 80 = $25
+
+Step 3: Calculate the price of the jacket.
+Price = (80 - 25) = $80
+Price = $80 - 25 = $20
+
+Step 4: Calculate the final price.
+Final Price = $20 - $80 = $25
+
+Step 5: Calculate the cost of the jacket.
+Cost = (25 - 80) = $25
+Cost = $25 - 80 = $20
+
+Step 6: Find the final price.
+Final Price = $20 - $80 = $25
+Final Price = $25 -
+  score=3/4  steps=8  kw=40%  has_answer=False  degenerate=False  correct_ans=✗
+
+  [Greedy output]
+  1. The discount is $80.
+2. The 10% tax is applied.
+3. The 25% discount is applied.
+4. The 25% tax is applied.
+5. The 10% tax is applied.
+6. The 25% tax is applied.
+7. The 10% tax is applied.
+8. The 25% tax is applied.
+9. The 10% tax is applied.
+10. The 25% tax is applied.
+
+The final price is $80.
+
+### 10.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.
+  score=2/4  steps=0  kw=60%  has_answer=False  degenerate=False  correct_ans=✗
+
+  [logical_chain]
+  PROMPT : Q: All professors at this university have a PhD. Dr. Smith is a professor here. Does Dr. Smith have a PhD? Explain your reasoning.
+A: Let's think step by step.
+
+  [Sampling output]
+  1. What is the purpose of the College of Arts and Sciences?
+2. What are the responsibilities of the College of Arts and Sciences?
+3. What is the role of the University of Texas at Austin?
+4. What is the role of the College of Arts and Sciences?
+
+Answers: A, B, C, D
+
+1. What is the purpose of the College of Arts and Sciences?
+2. What are the responsibilities of the College of Arts and Sciences?
+3. What is the role of the University of Texas at Austin?
+4. What is the role of the College of Arts an
+  score=1/4  steps=0  kw=0%  has_answer=True  degenerate=True  correct_ans=✗
+
+  [Greedy output]
+  1. What is the purpose of the study?
+
+2. What is the purpose of the study?
+
+3. What is the purpose of the study?
+
+4. What is the purpose of the study?
+
+5. What is the purpose of the study?
+
+6. What is the purpose of the study?
+
+7. What is the purpose of the study?
+
+8. What is the purpose of the study?
+
+9. What is the purpose of the study?
+
+10. What is the purpose of the study?
+
+11. What is the purpose of the study?
+
+12. What is the purpose of the study?
+
+13. What is the purpose of the study?
+
+14
+  score=1/4  steps=0  kw=0%  has_answer=False  degenerate=False  correct_ans=✗
+
+  [rate_problem]
+  PROMPT : Q: Alice can paint a fence in 3 hours. Bob can paint the same fence in 6 hours. If they work together, how long does it take?
+A: Let's think step by step.
+
+  [Sampling output]
+  First, let's figure out how long it will take for them to paint the fence. Since they are in the same direction, we can divide the distance between them by 3:
+
+Distance = 3 + 2 = 6
+
+So, Bob can paint the fence in 6 hours. Now, let's calculate how long it will take for them to paint the fence in 6 hours.
+
+Distance = 6 + 2 = 8
+
+Now, let's add the two numbers together.
+
+6 + 2 = 8
+
+So, Bob can paint the fence in 8 hours.
+
+Next, let's think about how long it will take for them to paint the fence in 6
+  score=2/4  steps=0  kw=33%  has_answer=False  degenerate=False  correct_ans=✓
+
+  [Greedy output]
+  Step 1:
+
+* Alice:
+	+ 3 hours
+	+ 6 hours
+	+ 4 hours
+	+ 3 hours
+	+ 6 hours
+	+ 4 hours
+	+ 3 hours
+	+ 6 hours
+	+ 4 hours
+	+ 3 hours
+	+ 6 hours
+	+ 4 hours
+	+ 3 hours
+	+ 6 hours
+	+ 4 hours
+	+ 3 hours
+	+ 6 hours
+	+ 4 hours
+	+ 3 hours
+	+ 6 hours
+	+ 4 hours
+	+ 3 hours
+	+ 6 hours
+	+ 4 hours
+	+ 3 hours
+	+ 6 hours
+	+ 4 hours
+	+ 3 hours
+	+ 6 hours
+	+ 4 hours
+	+ 3 hours
+	+ 6 hours
+	+ 4 hours
+	+ 3 hours
+	+ 6 hours
+	+ 4 hours
+	+ 3 hours
+	+ 6 hours
+	+ 4 hours
+	+ 3 hours
+	+ 6 hours
+	+ 4 hours
+	+ 3 hours
+	+ 6 hour
+  score=0/4  steps=1  kw=0%  has_answer=False  degenerate=True  correct_ans=✗
+
+  [multi_constraint_reasoning]
+  PROMPT : Q: A container holds 50 liters. It is currently 40% full. How many liters must be added to make it 90% full?
+A: Let's think step by step.
+
+  [Sampling output]
+  Q: 10 liters is 40% full.
+A: 40% is 10.
+Q: 20 liters is 40% full.
+A: 20% is 10.
+Q: 30 liters is 40% full.
+A: 30% is 10.
+Q: 40 liters is 40% full.
+A: 40% is 10.
+Q: 50 liters is 40% full.
+A: 50% is 10.
+Q: 60 liters is 40% full.
+A: 60% is 10.
+Q: 70 liters is 40% full.
+A: 70% is 10.
+Q: 80 liters is 40% full.
+A: 80% is 10.
+Q: 90 liters is 40% full.
+A: 90% is 10.
+Q: 100 liters is 40% full.
+A: 100% is 10.
+Q: 110 liters is 40% full.
+A: 110% is 10.
+  score=2/4  steps=0  kw=67%  has_answer=False  degenerate=False  correct_ans=✗
+
+  [Greedy output]
+  Step 1:
+
+Q: How many liters of water should be added to make it 90% full?
+A: Let's think step by step.
+
+Step 2:
+
+Q: How many liters of water should be added to make it 90% full?
+A: Let's think step by step.
+
+Step 3:
+
+Q: How many liters of water should be added to make it 90% full?
+A: Let's think step by step.
+
+Step 4:
+
+Q: How many liters of water should be added to make it 90% full?
+A: Let's think step by step.
+
+Step 5:
+
+Q: How many liters of water should be added to make it 90% full?
+A: Let's t
+  score=1/4  steps=8  kw=17%  has_answer=False  degenerate=True  correct_ans=✗
+
+  [comparison_reasoning]
+  PROMPT : Q: Plan A costs $200 upfront and $10 per month. Plan B costs $0 upfront and $25 per month. After how many months is Plan A cheaper?
+A: Let's think step by step.
+
+  [Sampling output]
+  1. Calculate the total cost of the project.
+2. Calculate the total cost of the project.
+3. Calculate the cost of the project.
+4. Calculate the cost of the project.
+5. Calculate the cost of the project.
+6. Calculate the cost of the project.
+7. Calculate the cost of the project.
+8. Calculate the cost of the project.
+9. Calculate the cost of the project.
+10. Calculate the cost of the project.
+11. Calculate the cost of the project.
+12. Calculate the cost of the project.
+13. Calculate the cost of the
+  score=2/4  steps=0  kw=83%  has_answer=False  degenerate=False  correct_ans=✓
+
+  [Greedy output]
+  Step 1:
+
+$200 + $25 = $200
+
+Step 2:
+
+$10 + $25 = $100
+
+Step 3:
+
+$10 + $25 = $100
+
+Step 4:
+
+$10 + $25 = $100
+
+Step 5:
+
+$10 + $25 = $100
+
+Step 6:
+
+$10 + $25 = $100
+
+Step 7:
+
+$10 + $25 = $100
+
+Step 8:
+
+$10 + $25 = $100
+
+Step 9:
+
+$10 + $25 = $100
+
+Step 10:
+
+$10 + $25 = $100
+
+Step 11:
+
+$10 + $25 = $100
+
+Step 12:
+
+$10 + $25 = $100
+
+Step 13:
+
+$10 + $25 = $100
+
+Step 14:
+
+$10 + $25 = $100
+
+Step 15:
+
+$10 + $2
+  score=3/4  steps=15  kw=100%  has_answer=False  degenerate=False  correct_ans=✓
+
+  [scientific_reasoning]
+  PROMPT : Q: A sample of a radioactive element has a half-life of 5 years. You start with 800 grams. How much remains after 15 years?
+A: Let's think step by step.
+
+  [Sampling output]
+  Step 1: Divide the number of grams by the half-life.
+Given: 800 grams
+
+Step 2: Multiply the result by the half-life.
+800 x 15 = 2500 grams
+
+Step 3: Divide the result by 15.
+2500 x 15 = 5000 grams
+
+Step 4: Subtract 5000 from the result.
+5000 - 5000 = 1250 grams
+
+Step 5: Divide the result by 125.
+1250 - 125 = 3000 grams
+
+Step 6: Divide the result by 125.
+3000 - 3000 = 4000 grams
+
+Step 7: Divide the result by 125.
+4000 - 4000 = 2400 grams
+
+Step 8: Divide the result by 125.
+2400 - 2400 = 1600 grams
+
+  score=3/4  steps=9  kw=86%  has_answer=False  degenerate=False  correct_ans=✓
+
+  [Greedy output]
+  Step 1: Find the half-life of the element.
+The half-life of an element is the time it takes for half of the element's mass to decay.
+
+Step 2: Find the half-life of the element.
+The half-life of an element is the time it takes for half of the element's mass to decay.
+
+Step 3: Find the half-life of the element.
+The half-life of an element is the time it takes for half of the element's mass to decay.
+
+Step 4: Find the half-life of the element.
+The half-life of an element is the time it takes for ha
+  score=1/4  steps=8  kw=29%  has_answer=False  degenerate=True  correct_ans=✗
+
+  [code_logic_trace]
+  PROMPT : Q: Consider this pseudocode:
+  x = 10
+  for i in range(3):
+      x = x * 2 - 1
+What is the value of x after the loop?
+A: Let's think step by step.
+
+  [Sampling output]
+  x = 10
+  for i in range(3):
+      x = x * 2 - 1
+What is the value of x after the loop?
+A: Let's think step by step.
+  x = 10
+  for i in range(3):
+      x = x * 2 - 1
+What is the value of x after the loop?
+A: Let's think step by step.
+  x = 10
+  for i in range(3):
+      x = x * 2 - 1
+What is the value of x after the loop?
+A: Let's think step by step.
+  x = 10
+  for i in range(3):
+      x = x * 2 - 1
+What is the value of x after the loop?
+A: Let's think step by step.
+  x = 10
+  for i in range(3):
+
+  score=0/4  steps=0  kw=14%  has_answer=False  degenerate=True  correct_ans=✗
+
+  [Greedy output]
+  
+  score=1/4  steps=0  kw=0%  has_answer=False  degenerate=False  correct_ans=✗
+
+  --- CoT Summary ---
+  Problem                         Sample  Greedy  Ans(s)  Ans(g)
+  ----------------------------------------------------------
+  arithmetic_word_problem            2/4      2/4        ✗        ✗
+  percentage_reasoning               3/4      2/4        ✗        ✗
+  logical_chain                      1/4      1/4        ✗        ✗
+  rate_problem                       2/4      0/4        ✓        ✗
+  multi_constraint_reasoning         2/4      1/4        ✗        ✗
+  comparison_reasoning               2/4      3/4        ✓        ✓
+  scientific_reasoning               3/4      1/4        ✓        ✗
+  code_logic_trace                   0/4      1/4        ✗        ✗
+
+  Avg CoT score (sampling): 1.88/4
+  Avg CoT score (greedy)  : 1.38/4
+  Answer accuracy (sample): 38%
+  Answer accuracy (greedy): 12%
+
+=================================================================
+  SECTION 4 — Knowledge Recall (Domain Coverage Check)
+=================================================================
+
+  ── MATHEMATICS ──
+  ✗  The derivative of sin(x) is
+       Generated: 1/x.
+
+The derivative of sin(x) is 1/x.
+  ✗  The integral of 1/x dx is
+       Generated: 1/x dx.
+
+The integral of 1/x dx is 1/
+  ✗  Euler's number e is approximately
+       Generated: 1.61800000000000000
+  ✓  The sum of angles in a triangle is
+       Generated: 180°. The sum of the angles in a triangle is 180°
+  ✗  A prime number has exactly
+       Generated: one prime factor.
+
+The prime factorization of 2 is 2 × 2 ×
+  Accuracy: 1/5 = 20%
+
+  ── COMPUTER_SCIENCE ──
+  ✗  In Big-O notation, O(1) means
+       Generated: O(n) for all n.
+
+In the following, we will use the following notation
+  ✗  A binary tree node has at most
+       Generated: 255 nodes.
+
+The number of nodes in a binary tree is 25
+  ✗  HTTP status code 404 means
+       Generated: that the server is not available.
+
+The server is not available when the client i
+  ✓  RAM stands for Random Access
+       Generated: Memory (RAM), which stores data temporarily in the form of random numbers. When 
+  ✓  Python is an interpreted
+       Generated: language that allows you to write Python code in a language that is not Python. 
+  Accuracy: 2/5 = 40%
+
+  ── SCIENCE ──
+  ✗  The speed of light in vacuum is approximately
+       Generated: 1000 times that of light in vacuum.
+
+The speed of light in vacuum
+  ✓  DNA stands for Deoxyribonucleic
+       Generated: Acid.
+
+The DNA of the human genome is 100,00
+  ✗  The powerhouse of the cell is the
+       Generated: cell itself. The cell is the source of the energy that powers the cell. The cell
+  ✗  Newton's second law: F equals
+       Generated: 1/2 mv2.
+
+The second law of motion is the law of conservation
+  ✓  The chemical formula for water is
+       Generated: H2O. The chemical formula for water is H2O. The chemical formula for water is
+  Accuracy: 2/5 = 40%
+
+  ── GENERAL_ACADEMIC ──
+  ✓  The French Revolution began in
+       Generated: 1789 and lasted until 1848. During this time, France experienced
+  ✓  The theory of relativity was developed by
+       Generated: Albert Einstein in 1905. Einstein's theory of relativity was based on the
+  ✓  Supply and demand is a fundamental concept in
+       Generated: economics. It is a fundamental concept in economics that describes the relations
+  ✓  Photons are particles of
+       Generated: light that are emitted when a photon interacts with an atom.
+
+The photon
+  ✗  The Pythagorean theorem applies to
+       Generated: any triangle.
+
+The Pythagorean theorem is a special case of the Pyth
+  Accuracy: 4/5 = 80%
+
+  Overall knowledge recall: 45%
+
+=================================================================
+  SECTION 5 — Degeneration Stress Tests
+=================================================================
+
+  [long_form_coherence]  ⚠ DEGENERATE
+  PROMPT : Write a detailed explanation of how gradient descent works in machine learning, covering t
+  OUTPUT : ##### 2.1.1: Gradient Descent
+
+Gradient descent is an iterative optimization algorithm that updates the parameters of the model as the algorithm progresses through the search space. The update rule for gradient descent is:
+
+$\mathbf{w} = \mathbf{w}_0 + \mathbf{w}_1 \cdot \nabla_{\mathbf{w}} \mathbf{w}_i + \mathbf{w}_j \cdot \nabla_{\mathbf{w}} \mathbf{w}_i + \mathbf{w}_j \cdot \nabla_{\mathbf{w}} 
+  rep=0.346  ttr=0.378
+
+  [abstract_reasoning]  ⚠ DEGENERATE
+  PROMPT : Explain the Monty Hall problem and why switching doors gives a 2/3 probability of winning.
+  OUTPUT : ## Example 4: Splitting a Box
+
+You have a rectangular box with a 2-by-2 arrangement of boxes. The box has a height of 2 and width of 3. Find the probability that the box will be filled with the whole number 1, 2, 3, and 4.
+
+Solution:
+
+First, we need to find the probability that the box will be filled with the whole number 1, 2, 3, and 4.
+
+The probability of a box filled with 1, 2, 3, and 4 is 1/3.
+  rep=0.491  ttr=0.267
+
+  [error_correction]  ⚠ DEGENERATE
+  PROMPT : The following solution has an error. Find and fix it.
+Problem: Find the derivative of f(x)
+  OUTPUT : The derivative of f(x) = x³ + 2x is f'(x) = 2x² + 4x.
+
+What is wrong and what is the correct answer?
+
+The derivative of f(x) = x³ + 2x is f'(x) = 2x² + 4x.
+
+What is wrong and what is the correct answer?
+
+The derivative of f(x) = x³ + 2x is f'(x) = 2x² + 4x.
+
+What is wrong and what is the correct answer?
+
+The derivative of f(x) = x³ + 2x is f'(x)
+  rep=0.697  ttr=0.215
+
+  [structured_output]  ⚠ DEGENERATE
+  PROMPT : List exactly 3 differences between supervised and reinforcement learning. Format your answ
+  OUTPUT : For each difference in the number of samples to be used in the learning algorithm, provide a corresponding difference in the number of samples to be used in the model. For each difference in the number of samples to be used in the learning algorithm, provide a corresponding difference in the number of samples to be used in the model. Note that the number of samples to be used in the learning algor
+  rep=0.632  ttr=0.230
+
+  [repetition_resistance]  ✓ OK
+  PROMPT : The number 42 is interesting because
+  OUTPUT : the only way to get 42 is 42 = 42 * 3 = 64.
+
+Now, how do you find 64? You need to add 64 to both sides of the equation. Since 64 is a multiple of 42, you should get 64 = 42 * 3. This gives you 122, which is the same answer as 42 * 3.
+
+This is an interesting result, but you might be surprised to learn that there are different methods to solve it.
+
+### How does this relate to the number 11?
+
+The num
+  rep=0.024  ttr=0.516
+
+  Degeneration failures: 4/5
+
+=================================================================
+  SECTION A — Domain Perplexity on Curated Passages
+  (No val.bin used — passages embedded in script)
+=================================================================
+
+  ── OPENWEBMATH ──
+  Passage 1: ppl=6.62  tokens=123
+  Passage 2: ppl=6.57  tokens=128
+  Passage 3: ppl=8.64  tokens=130
+  Avg: 7.28  Std: 0.96
+
+  ── STACKEXCHANGE ──
+  Passage 1: ppl=16.14  tokens=101
+  Passage 2: ppl=22.06  tokens=121
+  Passage 3: ppl=12.57  tokens=129
+  Avg: 16.92  Std: 3.91
+
+  ── COSMOPEDIA ──
+  Passage 1: ppl=4.70  tokens=140
+  Passage 2: ppl=8.50  tokens=129
+  Passage 3: ppl=7.87  tokens=137
+  Avg: 7.02  Std: 1.67
+
+  ── DCLM_EDU ──
+  Passage 1: ppl=6.13  tokens=118
+  Passage 2: ppl=12.37  tokens=116
+  Avg: 9.25  Std: 3.12
+
+  ── DOLMINO ──
+  Passage 1: ppl=5.20  tokens=124
+  Passage 2: ppl=6.08  tokens=141
+  Avg: 5.64  Std: 0.44
+
+  ── PES2O ──
+  Passage 1: ppl=18.00  tokens=125
+  Passage 2: ppl=11.62  tokens=119
+  Avg: 14.81  Std: 3.19
+
+  =============================================
+  Domain                  Avg PPL       Std  Signal
+  -------------------------------------------------------
+  dolmino                    5.64      0.44  ✓ Good
+  cosmopedia                 7.02      1.67  ✓ Good
+  openwebmath                7.28      0.96  ✓ Good
+  dclm_edu                   9.25      3.12  ✓ Good
+  pes2o                     14.81      3.19  ~ Moderate
+  stackexchange             16.92      3.91  ~ Moderate
+
+  Overall avg PPL: 10.21
+  Interpretation: lower PPL = model learned that domain better
+  Domains with PPL >20 are undertrained — prioritize in SFT data mix
+
+=================================================================
+  SECTION B — Natural Completion Log-Prob Scoring
+  (Base-model valid: no instruction format, pure text completion)
+=================================================================
+
+  ── MATHEMATICS ──
+  ✓  The derivative of sin(x) with respect to x is
+       valid  :  cos(x)                                       score=-1.078
+       invalid:  -sin(x)                                      score=-1.664
+       margin : +0.586  (confident)
+  ✓  The integral of 2x with respect to x equals
+       valid  :  x squared plus a constant                    score=-2.578
+       invalid:  2 plus a constant                            score=-2.984
+       margin : +0.406  (uncertain)
+  ✓  In a right triangle, the square of the hypotenuse equals the sum of
+       valid  :  the squares of the other two sides           score=-0.176
+       invalid:  the products of the other two sides          score=-1.312
+       margin : +1.137  (confident)
+  ✓  The quadratic formula gives the roots of ax² + bx + c = 0 as x equals 
+       valid  :  2a                                           score=-1.109
+       invalid:  4a                                           score=-1.414
+       margin : +0.305  (uncertain)
+  ✓  The value of pi is approximately
+       valid  :  3.14159                                      score=-0.279
+       invalid:  2.71828                                      score=-0.973
+       margin : +0.693  (confident)
+  ✓  A function f(x) is said to be continuous at a point if the limit of f(
+       valid  :  equals the value of the function at that point score=-1.031
+       invalid:  does not exist at that point                 score=-1.086
+       margin : +0.055  (uncertain)
+  Accuracy: 6/6 = 100%
+
+  ── COMPUTER SCIENCE ──
+  ✗  In computer science, an algorithm with O(log n) time complexity is sig
+       valid  :  logarithmically rather than linearly         score=-1.992
+       invalid:  linearly rather than logarithmically         score=-1.617
+       margin : -0.375  (uncertain)
+  ✓  A hash table provides average-case O(1) time complexity for insertions
+       valid  :  a hash function                              score=-1.141
+       invalid:  a sorting algorithm                          score=-2.719
+       margin : +1.578  (confident)
+  ✓  Recursion is a programming technique where a function solves a problem
+       valid  :  itself with a smaller version of the problem score=-2.453
+       invalid:  another function with a larger version of the problem score=-2.531
+       margin : +0.078  (uncertain)
+  ✓  In object-oriented programming, inheritance allows a subclass to
+       valid  :  reuse and extend the properties and methods of a parent class score=-1.617
+       invalid:  replace the properties and methods of a parent class entirely score=-2.750
+       margin : +1.133  (confident)
+  ✗  The TCP protocol ensures reliable data transmission by requiring the r
+       valid  :  acknowledgments for packets received         score=-3.234
+       invalid:  retransmissions for packets received         score=-3.219
+       margin : -0.016  (uncertain)
+  Accuracy: 3/5 = 60%
+
+  ── SCIENCE ──
+  ✓  Atoms of the same element that have different numbers of neutrons are 
+       valid  :  isotopes                                     score=-0.688
+       invalid:  ions                                         score=-2.656
+       margin : +1.969  (confident)
+  ✓  According to Newton's third law of motion, for every action there is a
+       valid  :  opposite reaction                            score=-0.024
+       invalid:  identical reaction in the same direction     score=-2.953
+       margin : +2.929  (confident)
+  ✓  In cellular respiration, glucose is broken down in the presence of oxy
+       valid  :  water                                        score=-1.844
+       invalid:  nitrogen                                     score=-2.656
+       margin : +0.812  (confident)
+  ✓  The speed of light in a vacuum is approximately 3 times 10 to the powe
+       valid  :  meters per second                            score=-2.016
+       invalid:  kilometers per hour                          score=-3.141
+       margin : +1.125  (confident)
+  ✓  Natural selection, as proposed by Darwin, states that organisms with t
+       valid  :  survive and reproduce, passing on those traits score=-1.766
+       invalid:  mutate rapidly and change species within a generation score=-4.156
+       margin : +2.391  (confident)
+  Accuracy: 5/5 = 100%
+
+  ── LOGIC AND REASONING ──
+  ✓  If all A are B, and all B are C, then it logically follows that all A 
+       valid  :  C                                            score=-1.023
+       invalid:  neither B nor C                              score=-2.500
+       margin : +1.477  (confident)
+  ✓  The contrapositive of the statement 'if P then Q' is logically equival
+       valid  :  not P'                                       score=-1.602
+       invalid:  not P and not Q'                             score=-2.375
+       margin : +0.773  (confident)
+  ✓  A deductive argument is valid if the conclusion follows necessarily fr
+       valid  :  true                                         score=-2.484
+       invalid:  false                                        score=-3.547
+       margin : +1.062  (confident)
+  ✗  The logical fallacy of affirming the consequent occurs when one incorr
+       valid  :  P must therefore be true                     score=-2.469
+       invalid:  Q must therefore be false                    score=-2.312
+       margin : -0.156  (uncertain)
+  Accuracy: 3/4 = 75%
+
+  ── ACADEMIC PROSE QUALITY ──
+  ✓  The results of the experiment were consistent with the hypothesis, sug
+       valid  :  plays a significant role in the observed phenomenon score=-2.422
+       invalid:  has no relationship to the observed phenomenon whatsoever score=-3.406
+       margin : +0.984  (confident)
+  ✓  Prior research has established a correlation between sleep deprivation
+       valid  :  causation                                    score=-0.078
+       invalid:  correlation                                  score=-6.344
+       margin : +6.266  (confident)
+  ✓  The authors acknowledge several limitations of this study, including t
+       valid  :  generalizability of the findings             score=-0.641
+       invalid:  statistical significance of the original claims score=-3.406
+       margin : +2.766  (confident)
+  Accuracy: 3/3 = 100%
+
+  Overall: 20/23 = 87%
+  Random baseline: 50%  |  Target for SFT readiness: >75%
+  Interpretation: this measures encoded knowledge, not instruction following
+
+=================================================================
+  SECTION C — Few-Shot In-Context Learning
+  (Only valid way to probe structured reasoning from a base model)
+=================================================================
+
+  ── MATH WORD PROBLEMS ──
+  Arithmetic reasoning with few-shot examples
+
+  ✗  Problem : A factory produces 150 units per day. How many units does it produce in 6 days?
+       Expected: 900
+       Output  : The factory produces 150 units per day. In 6 days it produces 150 times 6 equals 100 units.
+
+  ✗  Problem : A cyclist rides at 18 miles per hour. How far does she ride in 4 hours?
+       Expected: 72
+       Output  : The cyclist rides at 18 miles per hour. In 4 hours it travels 18 times 4 equals 24 miles.
+
+  ✗  Problem : A printer prints 30 pages per minute. How many pages does it print in 8 minutes?
+       Expected: 240
+       Output  : The printer prints 30 pages per minute. In 8 minutes it prints 30 times 3 equals 120 pages.
+  Accuracy: 0/3 = 0%
+
+  ── LOGICAL SYLLOGISMS ──
+  Deductive reasoning with few-shot examples
+
+  ✗  Problem : All squares are rectangles. Shape X is a square. Is shape X a rectangle?
+       Expected: yes
+       Output  : All squares are rectangles. Shape X is a square. Is shape X a rectangle?
+
+  ✓  Problem : No fish are mammals. A salmon is a fish. Is a salmon a mammal?
+       Expected: no
+       Output  : No. A salmon is a mammal. Therefore, a salmon is a mammal.
+
+  ✗  Problem : All prime numbers greater than 2 are odd. 17 is a prime number greater than 2. Is 17 odd?
+       Expected: yes
+       Output  : All prime numbers greater than 2 are odd. 17 is a prime number greater than 2. Is 17 even?
+  Accuracy: 1/3 = 33%
+
+  ── PATTERN COMPLETION ──
+  Sequence and pattern reasoning
+
+  ✗  Problem : What comes next in the sequence: 5, 10, 15, 20, ?
+       Expected: 25
+       Output  : The sequence increases by 5 each time. The next number is 100.
+
+  ✗  Problem : What comes next in the sequence: 1, 4, 9, 16, ?
+       Expected: 25
+       Output  : The sequence multiplies by 3 each time. The next number is 16.
+
+  ✗  Problem : What comes next in the sequence: 100, 50, 25, 12.5, ?
+       Expected: 6.25
+       Output  : The sequence increases by 1 each time. The next number is 10.
+  Accuracy: 0/3 = 0%
+
+  ── CAUSE AND EFFECT ──
+  Causal reasoning with few-shot priming
+
+  ✗  Problem : Water is cooled below 0 degrees Celsius. What happens to it?
+       Expected: ice
+       Output  : The water is cooled below 0 degrees Celsius. The plant wilts and eventually dies.
+
+  ✗  Problem : A gas is compressed into a smaller volume at constant temperature. What happens to its pressure?
+       Expected: increase
+       Output  : The gas is compressed into a smaller volume at constant temperature. The gas is compressed into a smaller volume at cons
+
+  ✗  Problem : An object is dropped from a height in a vacuum. What happens to its speed as it falls?
+       Expected: increase
+       Output  : The object is dropped from a height in vacuum. The object is not moving at all.
+  Accuracy: 0/3 = 0%
+
+  --- Few-Shot ICL Summary ---
+  Task                             Accuracy
+  ------------------------------------------
+  math_word_problems             ░░░░░░░░░░  0%
+  logical_syllogisms             ███░░░░░░░  33%
+  pattern_completion             ░░░░░░░░░░  0%
+  cause_and_effect               ░░░░░░░░░░  0%
+  OVERALL                        8%
+
+  Interpretation:
+  ICL accuracy measures how well the model generalises from examples
+  in its context window. This is a direct product of pretraining quality.
+  Strong ICL → SFT will be very effective.
+  Weak ICL   → SFT will need more data and more epochs.
+  Signal: ✗ Weak ICL — base model may need more pretraining
+
+=================================================================
+  FINAL EVALUATION REPORT
+=================================================================
+
+  ── Multiple Choice Accuracy ──
+  elementary_math                     ░░░░░░░░░░░░░░░░░░░░  0%
+  algebra_and_reasoning               ░░░░░░░░░░░░░░░░░░░░  0%
+  logical_deduction                   ████████░░░░░░░░░░░░  40%
+  scientific_reasoning                ████████░░░░░░░░░░░░  40%
+  computer_science                    ████░░░░░░░░░░░░░░░░  20%
+  multi_step_word_problems            ███████████████░░░░░  75%
+  reading_comprehension_and_inference ██████░░░░░░░░░░░░░░  33%
+  OVERALL                             29%
+
+  ── Chain-of-Thought ──
+  CoT quality  (sampling) : 1.88/4
+  CoT quality  (greedy)   : 1.38/4
+  Answer accuracy (sample): 38%
+  Answer accuracy (greedy): 12%
+
+  ── Knowledge Recall ──
+  mathematics                         20%
+  computer_science                    40%
+  science                             40%
+  general_academic                    80%
+
+  ── Reasoning Model Readiness ──
+  ✗ Weak reasoning base — intensive SFT on reasoning traces required
+
+  ── SFT Priority Order (based on results) ──
+  • elementary_math  (0% accuracy)
+  • algebra_and_reasoning  (0% accuracy)
+  • computer_science  (20% accuracy)
+
+  ── What to watch in SFT ──
+  1. CoT score should improve from current baseline
+  2. Answer accuracy (greedy) is the primary north-star metric
+  3. MC accuracy on math + logic should exceed 70% before DPO
+  4. Degeneration rate should drop to 0/5 on stress tests
+=================================================================
+
+
+=================================================================
+  EXTENDED REPORT — BASE MODEL VALIDITY SECTIONS
+=================================================================
+
+  Section A — Domain Perplexity
+  dolmino              ppl=   5.64  ██████████████░░░░░
+  cosmopedia           ppl=   7.02  ████████████░░░░░░░
+  openwebmath          ppl=   7.28  ████████████░░░░░░░
+  dclm_edu             ppl=   9.25  ██████████░░░░░░░░░
+  pes2o                ppl=  14.81  █████░░░░░░░░░░░░░░
+  stackexchange        ppl=  16.92  ███░░░░░░░░░░░░░░░░
+  Overall avg PPL: 10.21
+
+  Section B — Natural Completion Accuracy
+  mathematics                    6/6 = 100%
+  computer_science               3/5 = 60%
+  science                        5/5 = 100%
+  logic_and_reasoning            3/4 = 75%
+  academic_prose_quality         3/3 = 100%
+  Overall: 87%  (random baseline=50%)
+
+  Section C — Few-Shot ICL Accuracy
+  math_word_problems             0/3 = 0%
+  logical_syllogisms             1/3 = 33%
+  pattern_completion             0/3 = 0%
+  cause_and_effect               0/3 = 0%
+  Overall: 8%
+
+  ── Composite Readiness Score ──
+  Domain PPL score  (35%) : 0.49
+  Natural completion(35%) : 0.87
+  Few-shot ICL      (30%) : 0.08
+  Composite score         : 0.50 / 1.00
+  Verdict: ~ Good base — SFT will be effective
+=================================================================
+
