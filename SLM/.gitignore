@@ -2,6 +2,19 @@
 # SLM Project-Specific .gitignore
 # ==========================================
 
+.venv/
+base_models/
+batches/
+checkpoints/
+data/
+data copy/
+data_bkp/
+other/
+plan/
+training_artifacts/
+train.bin
+val.bin
+
 # 1. Model Weights & Exports
 # Ignores final and intermediate model binaries
 *.pt

@@ -1,0 +1,1364 @@
+
+=================================================================
+  SFT Model Evaluation
+  Comparing: BASE model vs SFT model
+  SFT checkpoint: checkpoints/sft/sft_best_model.pt
+  Base checkpoint: checkpoints/best_model.pt
+=================================================================
+  Loading [BASE] from checkpoints/best_model.pt...
+    val_loss=1.4107  params=467.0M
+  Loading [SFT] from checkpoints/sft/sft_best_model.pt...
+    val_loss=0.7252  params=467.0M
+
+  SFT Training Summary:
+  Starting val loss : 1.2930  (step 100)
+  Final val loss    : 1.1999  (step 8000+)
+  Improvement       : 7.2%
+  Epochs completed  : 3
+  Total steps       : ~8,420
+  Training time     : ~9.1 hours
+
+=================================================================
+  SECTION 1 — Format Compliance
+  Did SFT teach the model to follow the Step/Therefore format?
+=================================================================
+
+  ── BASE ──
+
+  Prompt : Problem: If a factory produces 150 units per day, how many units does 
+  Output : The factory produces 150 units per day.
+
+The number of units produced in 6 days is 150.
+
+The number of units produced in 6 days is 150.
+
+The number of units produced in 6 days is 150.
+
+The number of units produced in 6 days is 150.
+
+The number of units produced in 6 days is 150.
+
+The number of units
+  steps=0  termination=✗  advances=✗  degen=✗  rep=0.882
+
+  Prompt : Problem: A rectangle has length 12 and width 5. What is its area?
+
+Sol
+  Output : 
+
+Let the rectangle be $ABC$ and the length be $L$.
+
+Then $L = \frac{AB}{2}$ and $AB = \frac{AC}{2}$.
+
+So, $L = \frac{AB}{2} = \frac{12}{5}$ and $AB = \frac{AC}{2}$
+
+Hence, area of rectangle is $12L$
+
+Question 2.
+
+What is the area of the rectangle whose length is 20 and width is 5?
+
+Solution:
+
+Let t
+  steps=0  termination=✗  advances=✗  degen=✗  rep=0.387
+
+  Prompt : Problem: All mammals are warm-blooded. A whale is a mammal. Is a whale
+  Output : 
+
+The reason for this is that the whale is a mammal. The whale is warm-blooded, and therefore is warm-blooded. The mammal is warm-blooded because it is warm-blooded.
+
+The reason for this is that the whale is warm-blooded. The whale is warm-blooded because it is warm-blooded because it is warm-bloode
+  steps=0  termination=✗  advances=✗  degen=✗  rep=0.373
+
+  Prompt : Problem: There are 3 red marbles and 5 blue marbles in a bag. How many
+  Output : 
+
+Let the number of marbles in the bag be x.
+
+There are 3 red marbles and 5 blue marbles in the bag.
+
+Therefore,
+
+x + 5 = 3 + 5 = 7
+
+x = 7/5
+
+x = 7/25
+
+Therefore, there are 7 red marbles and 7 blue marbles in the bag.
+
+10.
+
+There are 4 red marbles and 5 blue marbles in a bag. How many marbles are th
+  steps=0  termination=✗  advances=✗  degen=✗  rep=0.36
+
+  Prompt : Problem: Sara has 20 candies. She gives 7 to her friend and eats 3 her
+  Output : 
+
+Let the number of candies be ‘x’.
+
+Let the number of candies be ‘y’.
+
+Let the number of candies be ‘z’.
+
+Let the number of candies be ‘x’ and the number of candies be ‘y’.
+
+Let the number of candies be ‘z’ and the number of candies be ‘x’.
+
+Let the number of candies be ‘y’ and the number of candie
+  steps=0  termination=✗  advances=✗  degen=✗  rep=0.819
+
+  Prompt : Problem: A car travels at 60 miles per hour. How far does it travel in
+  Output : Let x be the distance traveled by the car in 2.5 hours. Then, the distance traveled by the car in 2.5 hours is given by:
+
+$x = \frac{d}{dt} \left( 60 \right) \left( 2.5 \right) = 60 \frac{d}{dt} \left( 2.5 \right) = 60 \frac{d}{dt} \left( 2.5 \right)$
+
+Now, we have to solve the equation for x.
+
+$\fr
+  steps=0  termination=✗  advances=✗  degen=✗  rep=0.414
+
+  Prompt : Problem: If log₂(x) = 4, what is x?
+
+Solution:
+  Output : 
+
+We need to find the value of x.
+
+First, we need to determine the value of log₂(x).
+
+Log₂(x) = 4
+
+Then, we can find the value of x.
+
+x = 4
+
+We can now find the value of x.
+
+x = 4
+
+Therefore, the value of x is 4.
+
+Question 15.
+Find the value of x in each of the following:
+
+(i) 4x + 4
+(ii) 2x + 3
+(ii
+  steps=0  termination=✗  advances=✗  degen=✓  rep=0.071
+
+  Prompt : Problem: Water boils at 100°C at sea level. What happens to water if i
+  Output : 
+
+The boiling point of water at 100°C is 118°C.
+
+The boiling point of water at 100°C is 120°C.
+
+The boiling point of water at 100°C is 122°C.
+
+The boiling point of water at 100°C is 122°C.
+
+The boiling point of water at 100°C is 120°C.
+
+The boiling point of water at 100°C is 122°C.
+
+The boiling poin
+  steps=0  termination=✗  advances=✗  degen=✗  rep=0.812
+
+  ── SFT ──
+
+  Prompt : Problem: If a factory produces 150 units per day, how many units does 
+  Output : Let's break down the information given:
+
+* A factory produces 150 units per day, which means it produces 150 * 100 = 1500 units of output.
+* The total number of units produced in 6 days is 1500.
+
+Therefore, the answer is 200.
+
+Therefore, the answer is 200.
+
+Therefore, the answer is 200.
+
+Therefore, 
+  steps=0  termination=✓  advances=✗  degen=✗  rep=0.585
+
+  Prompt : Problem: A rectangle has length 12 and width 5. What is its area?
+
+Sol
+  Output : Let's start with the length of the rectangle. We know that the rectangle is a rectangle with a width of 12 inches and a length of 5 inches.
+
+Therefore, the area of the rectangle is 12 * 5 = 36 square inches.
+
+Therefore, the answer is 36.
+
+Therefore, the answer is 36.
+
+Therefore, the answer is 36.
+
+T
+  steps=0  termination=✓  advances=✗  degen=✗  rep=0.597
+
+  Prompt : Problem: All mammals are warm-blooded. A whale is a mammal. Is a whale
+  Output : The question asks: What is the temperature of a mammal in degrees Celsius?
+
+Step 1: The question asks: What is the temperature of a mammal in degrees Celsius?
+
+Step 2: Based on the information given, 'a whale is warm-blooded' is correct.
+
+Step 3: The question asks: What is the temperature of a mamma
+  steps=5  termination=✓  advances=✓  degen=✗  rep=0.59
+
+  Prompt : Problem: There are 3 red marbles and 5 blue marbles in a bag. How many
+  Output : 
+Step 1: There are 3 red marbles and 5 blue marbles in the bag.
+
+Step 2: There are 3 red marbles and 5 blue marbles in the bag.
+
+Step 3: There are 3 red marbles and 5 blue marbles in the bag.
+
+Step 4: There are 3 red marbles and 5 blue marbles in the bag.
+
+Step 5: There are 3 red marbles and 5 blue 
+  steps=11  termination=✗  advances=✗  degen=✗  rep=0.649
+
+  Prompt : Problem: Sara has 20 candies. She gives 7 to her friend and eats 3 her
+  Output : The total number of candies Sara has is 20 + 3 = 40.
+
+Therefore, the answer is 40.
+
+Therefore, the answer is 40.
+
+Therefore, the answer is 40.
+
+Therefore, the answer is 40.
+
+Therefore, the answer is 40.
+
+Therefore, the answer is 40.
+
+Therefore, the answer is 40.
+
+Therefore, the answer is 40.
+
+Theref
+  steps=0  termination=✓  advances=✗  degen=✗  rep=0.838
+
+  Prompt : Problem: A car travels at 60 miles per hour. How far does it travel in
+  Output : Let's set up the equation: 60 miles per hour = 2.5 miles per hour.
+
+We know that the car travels 60 miles per hour in 2.5 hours.
+
+Therefore, the answer is 100.000.
+
+Therefore, the answer is 100.000.
+
+Therefore, the answer is 100.000.
+
+Therefore, the answer is 100.000.
+
+Therefore, the answer is 100.0
+  steps=0  termination=✓  advances=✗  degen=✗  rep=0.631
+
+  Prompt : Problem: If log₂(x) = 4, what is x?
+
+Solution:
+  Output : We know that log₂(x) = 1, so we can write:
+
+log₂(x) = 4
+
+Therefore, the answer is 1.
+
+Therefore, the answer is 1.
+
+Therefore, the answer is 1.
+
+Therefore, the answer is 1.
+
+Therefore, the answer is 1.
+
+Therefore, the answer is 1.
+
+Therefore, the answer is 1.
+
+Therefore, the answer is 1.
+
+Therefore, 
+  steps=0  termination=✓  advances=✗  degen=✗  rep=0.829
+
+  Prompt : Problem: Water boils at 100°C at sea level. What happens to water if i
+  Output : 
+Step 1: The boiling point of water is 100°C, so it will boil at 100°C at sea level.
+
+Step 2: The water is also at 100°C at sea level.
+
+Step 3: The water is also at 100°C at sea level.
+
+Step 4: The water is also at 100°C at sea level.
+
+Therefore, the answer is 100.
+
+Therefore, the answer is 100.
+
+Th
+  steps=4  termination=✓  advances=✗  degen=✗  rep=0.626
+
+  Metric                                BASE         SFT
+  -------------------------------------------------------
+  Has Step N: structure           0%     ✗  38%     ✗
+  Has Therefore termination       0%     ✗  88%     ✓
+  Steps advance (no loop)         0%     ✗  12%     ✗
+  Degenerate output               88%     ✗  100%     ✗
+
+=================================================================
+  SECTION 2 — Arithmetic Execution Accuracy
+  Base model set up operations correctly but got wrong answers.
+  Did SFT fix the execution?
+=================================================================
+
+  ── BASE ──
+  ✗  Problem: A factory produces 150 units per day. How many unit
+       expected=900  extracted=1000000000
+       output: Let the number of units produced in 6 days be x. | 
+  ✗  Problem: A cyclist rides at 18 miles per hour. How far does
+       expected=72  extracted=100
+       output: Let the cyclist ride at 18 miles per hour. | 
+  ✗  Problem: A printer prints 30 pages per minute. How many page
+       expected=240  extracted=8
+       output: Let us first calculate the number of pages printed in 8 minutes. | 
+  ✗  Problem: If you have 3 apples and get 2 more, how many apple
+       expected=5  extracted=None
+       output: Let’s denote the apples as x and the number of apples as y. | 
+  ✗  Problem: There were 5 birds on a tree. 2 flew away. How many
+       expected=3  extracted=2
+       output: Let the number of birds be x. | 
+  ✗  Problem: A boy had 10 candies. He gave 3 to his sister and 2
+       expected=5  extracted=25
+       output: Let the number of candies be x. | 
+  ✗  Problem: A rectangle has length 8 and width 5. What is its a
+       expected=40  extracted=5
+       output: Let x be the length of the rectangle. | 
+  ✗  Problem: If 3x + 7 = 22, what is x?
+
+Solution:
+       expected=5  extracted=22
+       output: Let x = 3x + 7 | 
+  ✗  Problem: What is 15% of 240?
+
+Solution:
+       expected=36  extracted=24
+       output: Let us assume that the number of 15% of 240 is 15%. | 
+  ✗  Problem: A store sells apples for $0.50 each. Maria buys 4 a
+       expected=3  extracted=4
+       output: We can solve this problem using the following formula: | 
+  ✗  Problem: A car gets 35 miles per gallon. Gas costs $3.50 per
+       expected=35  extracted=15
+       output: Given: | 
+  ✗  Problem: A recipe for 4 people needs 2 cups of flour. How ma
+       expected=5  extracted=2000000000
+       output: Let the number of people be x. | 
+
+  Accuracy: 0/12 = 0%
+
+  ── SFT ──
+  ✗  Problem: A factory produces 150 units per day. How many unit
+       expected=900  extracted=10
+       output: Let's break down the information given: | Number of days in 6 days = 150
+  ✗  Problem: A cyclist rides at 18 miles per hour. How far does
+       expected=72  extracted=4
+       output: Let's denote the time it takes for the cyclist to ride 18 miles per hour as T. Then, the time it takes to ride 18 miles 
+  ✗  Problem: A printer prints 30 pages per minute. How many page
+       expected=240  extracted=300
+       output: Let's denote the number of pages in 8 minutes as P. Then, the total number of pages in 8 minutes is 30 * 8 = 300 pages. 
+  ✗  Problem: If you have 3 apples and get 2 more, how many apple
+       expected=5  extracted=10
+       output: To find the number of apples you have, we can use the formula: | 
+  ✗  Problem: There were 5 birds on a tree. 2 flew away. How many
+       expected=3  extracted=2
+       output: Let's break down the information given: | Number of birds on the tree: 5
+  ✗  Problem: A boy had 10 candies. He gave 3 to his sister and 2
+       expected=5  extracted=10
+       output: Let's denote the number of candies the boy has by x. Then, the total number of candies he has is 10 + 3x. | 
+  ✗  Problem: A rectangle has length 8 and width 5. What is its a
+       expected=40  extracted=25
+       output: Let's denote the length of the rectangle as x. | 
+  ✗  Problem: If 3x + 7 = 22, what is x?
+
+Solution:
+       expected=5  extracted=12
+       output: To solve this problem, we need to determine the value of x, which represents the distance between the point (3, 7) and t
+  ✗  Problem: What is 15% of 240?
+
+Solution:
+       expected=36  extracted=15
+       output: Step 1: Step 1: To solve this problem, we need to determine the value of x, which represents the percentage of 240. | 
+  ✗  Problem: A store sells apples for $0.50 each. Maria buys 4 a
+       expected=3  extracted=0
+       output: To calculate Maria's change in money, we subtract the cost of the apples from the cost of the $0.50 bill. | 
+  ✗  Problem: A car gets 35 miles per gallon. Gas costs $3.50 per
+       expected=35  extracted=2
+       output: Let $x$ be the distance traveled by the car. Then the total cost is $350 - $x = $350 - $2x = $2x + $100. So the cost is 
+  ✗  Problem: A recipe for 4 people needs 2 cups of flour. How ma
+       expected=5  extracted=8
+       output: Let's assume the recipe states that each person needs 2 cups of flour. | 
+
+  Accuracy: 0/12 = 0%
+
+  Model                  Accuracy     vs Base
+  ------------------------------------------
+  BASE                         0%         +0%
+  SFT                          0%         +0%
+
+=================================================================
+  SECTION 3 — Chain-of-Thought Quality
+  Same 8 problems as base eval — direct comparison.
+=================================================================
+
+  ── BASE ──
+
+  [factory_widgets]
+  We can solve this by multiplying the number of widgets by the number of days in a week. Therefore, we can write the equation as:
+
+(240 - 6) = (240 - 6) × 6
+
+We can now use the formula to find the number of widgets produced in 4 weeks.
+
+(240 - 6) × 4 = 240
+
+Or, 240 × 4 = 1000
+
+Or, 240 × 1000 = 1000 × 4
+
+Or, 240 × 1000 = 10000
+
+Or, 240 × 1000 = 10000
+
+Or, 240 × 1000 = 10000
+
+Or, 240 × 1000 = 10000
+
+
+  score=1/4  steps=0  advance=✗  kw=60%  term=✗  ans=✗ (got=240, want=5760)
+
+  [jacket_discount]
+  
+
+Let $S_{1}$ be the final price.
+
+$S_{2}$ = 25% off
+
+$S_{3}$ = 25% on
+
+$S_{4}$ = 25% tax
+
+$S_{5}$ = 25% on
+
+$S_{6}$ = 25% tax
+
+$S_{7}$ = 25% tax
+
+$S_{8}$ = 25% tax
+
+$S_{9}$ = 25% tax
+
+$S_{10}$ = 25% tax
+
+$S_{11}$ = 25% tax
+
+$S_{12}$ = 25% tax
+
+$S_{13}$ = 25% tax
+
+$S_{14}$ = 25% tax
+
+$S_{15}$ = 25% tax
+
+$S_{16}$ = 25% tax
+
+$S_{17}$ = 25% tax
+
+$S_{18}$ = 25% tax
+
+$S_{19}$ = 25% tax
+
+$S_{20}$ = 25% 
+  score=2/4  steps=0  advance=✗  kw=40%  term=✗  ans=✗ (got=26, want=66)
+
+  [logical_chain]
+  The problem is a bit complicated.
+
+First, we need to look at the problem statement.
+
+Solution: The problem statement is:
+
+A professor at this university has a PhD.
+
+The professor has a PhD.
+
+The professor has a PhD.
+
+The professor has a PhD.
+
+The professor has a PhD.
+
+The professor has a PhD.
+
+The professor has a PhD.
+
+The professor has a PhD.
+
+The professor has a PhD.
+
+The professor has a PhD.
+
+T
+  score=1/4  steps=0  advance=✗  kw=40%  term=✗  ans=✗ (got=None, want=yes)
+
+  [pipe_rate]
+  
+
+Let's assume that Alice and Bob are both in a room. Then, Alice and Bob need to work together to paint the fence.
+
+First, we need to figure out how long it takes for them to paint the fence. We can use the equation:
+
+$$\frac{1}{2} \times 3 \times 6 = \frac{1}{2}$$
+
+$$\frac{1}{2} \times 3 \times 6 = \frac{1}{2}$$
+
+$$\frac{1}{2} \times 3 \times 6 = \frac{1}{2}$$
+
+$$\frac{1}{2} \times 6 = \frac{1}{
+  score=0/4  steps=0  advance=✗  kw=20%  term=✗  ans=✗ (got=3, want=2)
+
+  [container_fill]
+  
+
+Let the container hold 50 liters.
+
+We know that the container holds 50 liters.
+
+Let the container hold 90 liters.
+
+We know that the container holds 90 liters.
+
+Now, let the container hold 90 liters.
+
+We know that the container holds 90 liters.
+
+Now, let the container hold 90 liters.
+
+We know that the container holds 90 liters.
+
+Now, let the container hold 90 liters.
+
+We know that the container h
+  score=1/4  steps=0  advance=✗  kw=33%  term=✗  ans=✗ (got=90, want=25)
+
+  [plan_comparison]
+  Let the total cost of the project be $x$ and the cost of the project be $y$.
+
+The total cost of the project is $x+y=200$ and the cost of the project is $y=200-x$.
+
+Therefore, the cost of the project is $200-x=200+200=200$.
+
+Therefore, the cost of the project is $200-200=200$.
+
+Therefore, the cost of the project is $200-200=150$.
+
+Therefore, the cost of the project is $150-150=150$.
+
+Therefore, the
+  score=1/4  steps=0  advance=✗  kw=60%  term=✗  ans=✗ (got=., want=14)
+
+  [half_life]
+  We need to find out the half-life of the element. The half-life of an element is the amount of time it takes for half of the element's atomic nucleus to decay.
+
+In the above example, the half-life of the element is 5 years.
+
+The half-life of a radioactive element is 5 years.
+
+The half-life of an element is the amount of time it takes for half of the element's atomic nucleus to decay.
+
+In the above
+  score=0/4  steps=0  advance=✗  kw=17%  term=✗  ans=✗ (got=5, want=100)
+
+  [code_trace]
+  
+
+10
+
+This is a little more complicated than the first part. We are working with a 3D point, so we need to add a constant to the point. We can use the following formula:
+
+x = x + 10
+
+This is a bit more complicated, but it is the same formula.
+
+
+Solution:
+
+20
+
+Solution:
+
+x = 20
+
+This is a bit more complicated than the first part. We are working with a 3D point, so we need to add a constant to the p
+  score=0/4  steps=0  advance=✗  kw=25%  term=✗  ans=✗ (got=10, want=73)
+
+  ── SFT ──
+
+  [factory_widgets]
+  To find out, we need to calculate the number of days it takes for a widget to produce 240 widgets. Let's break down the information given:
+
+Number of days it takes for a widget to produce 240 widgets: 240 = 60 days
+
+Therefore, the answer is 20.
+
+Therefore, the answer is 20.
+
+Therefore, the answer is 20.
+
+Therefore, the answer is 20.
+
+Therefore, the answer is 20.
+
+Therefore, the answer is 20.
+
+Ther
+  score=2/4  steps=0  advance=✗  kw=60%  term=✓  ans=✗ (got=20, want=5760)
+
+  [jacket_discount]
+  We know that the total cost of the jacket is $80.
+
+Therefore, the answer is 25% off.
+
+Therefore, the answer is 25% on the final price.
+
+Therefore, the answer is 25% on the final price.
+
+Therefore, the answer is 25% on the final price.
+
+Therefore, the answer is 25% on the final price.
+
+Therefore, the answer is 25% on the final price.
+
+Therefore, the answer is 25% on the final price.
+
+Therefore, the
+  score=2/4  steps=0  advance=✗  kw=40%  term=✓  ans=✗ (got=25, want=66)
+
+  [logical_chain]
+  The question asks about a specific scientific concept. The question asks about a specific scientific concept. The question asks about a specific scientific concept. The question asks about a specific scientific concept.
+
+Step 1: Identify the key information from the passage: All professors at this university have a PhD.
+
+Step 2: The question asks about a specific scientific concept. The question a
+  score=1/4  steps=13  advance=✗  kw=40%  term=✗  ans=✗ (got=13, want=yes)
+
+  [pipe_rate]
+  The fence is 3 hours long. Bob can paint it in 6 hours, so he can paint it in 3 * 6 = 12 hours.
+
+Therefore, the answer is 12.
+
+Therefore, the answer is 12.
+
+Therefore, the answer is 12.
+
+Therefore, the answer is 12.
+
+Therefore, the answer is 12.
+
+Therefore, the answer is 12.
+
+Therefore, the answer is 12.
+
+Therefore, the answer is 12.
+
+Therefore, the answer is 12.
+
+Therefore, the answer is 12.
+
+The
+  score=1/4  steps=0  advance=✗  kw=20%  term=✓  ans=✗ (got=12, want=2)
+
+  [container_fill]
+  
+Step 1: Step 1: To find the volume of the container, we need to find the volume of the whole container.
+
+Step 2: The volume of the container is 50 liters.
+
+Step 3: To find the volume of the whole container, we need to find the volume of the container.
+
+Step 4: We are given that the volume of the whole container is 50 liters.
+
+Step 5: So, we can set up the equation as follows:
+
+Step 6: 50 = 50
+
+St
+  score=2/4  steps=22  advance=✗  kw=33%  term=✗  ans=✗ (got=5, want=25)
+
+  [plan_comparison]
+  The total cost of the two plans is $200 + $25 = $100. Plan A costs $100 upfront and $10 per month, so it costs $100 + $10 per month = $100.
+
+Therefore, the answer is 100.
+
+Therefore, the answer is 100.
+
+Therefore, The answer is 100.
+
+Therefore, The answer is 100.
+
+Therefore, The answer is 100.
+
+Therefore, The answer is 100.
+
+Therefore, The answer is 100.
+
+Therefore, The answer is 100.
+
+Therefore, 
+  score=2/4  steps=0  advance=✗  kw=60%  term=✓  ans=✗ (got=100, want=14)
+
+  [half_life]
+  We know that half-life is 15 years, so the half-life of 800 grams is 15 years x 5 years = 200 years.
+
+Therefore, the answer is 200.
+
+Therefore, the answer is 200.
+
+Therefore, the answer is 200.
+
+Therefore, the answer is 200.
+
+Therefore, the answer is 200.
+
+Therefore, the answer is 200.
+
+Therefore, the answer is 200.
+
+Therefore, the answer is 200.
+
+Therefore, the answer is 200.
+
+Therefore, the answ
+  score=2/4  steps=0  advance=✗  kw=67%  term=✓  ans=✗ (got=200, want=100)
+
+  [code_trace]
+  
+Step 1: The value of x after the loop is 10.
+
+Step 2: Therefore, the value of x after the loop is 10.
+
+Therefore, the answer is 10.
+
+Therefore, the answer is 10.
+
+Therefore, the answer is 10.
+
+Therefore, the answer is 10.
+
+Therefore, the answer is 10.
+
+Therefore, the answer is 10.
+
+Therefore, the answer is 10.
+
+Therefore, the answer is 10.
+
+Therefore, the answer is 10.
+
+Therefore, the answer is 1
+  score=2/4  steps=2  advance=✓  kw=25%  term=✓  ans=✗ (got=10, want=73)
+
+  Metric                           BASE         SFT
+  --------------------------------------------------
+  Avg CoT score (/4)               0.75        1.75
+  Avg steps produced               0.00        4.62
+  Steps advance rate               0.00        0.12
+  Termination rate                 0.00        0.75
+  Avg keyword coverage             0.37        0.43
+  Answer accuracy                  0.00        0.00
+
+=================================================================
+  SECTION 4 — Answer Termination (Greedy vs Sampling)
+  Base model: greedy=12%, sampling=38%.
+  After SFT: greedy should match or exceed sampling.
+=================================================================
+
+  ── BASE ──
+
+  Prompt: Problem: 5 + 3 = ?
+
+Solution:
+  Greedy   [term=✗  ans=✗]: Let the number be 5 + 3.
+
+Then, 5 + 3 = 5 + 3 = 5 + 2
+
+Therefore, 5 + 3 = 5 + 2
+
+Therefore, 5 + 3 = 5 + 2
+
+Therefore,
+  Sampling [term=✗  ans=✗]: We can solve this problem using the formula:
+
+$$\frac{5 + 3}{5 + 3} = \frac{5}{5}$$
+
+$$\frac{5}{5} + \frac{3}{5} = \fr
+
+  Prompt: Problem: A bag has 2 red marbles and 6 blue marbles. How man
+  Greedy   [term=✗  ans=✗]: Let the number of marbles in the bag be x.
+
+Let the number of blue marbles be y.
+
+Let the number of red marbles be r.
+  Sampling [term=✗  ans=✗]: Let's solve this problem by using the concept of permutations and combinations.
+
+The number of ways to arrange 2 marbles
+
+  Prompt: Problem: If today is Wednesday, what day will it be in 3 day
+  Greedy   [term=✗  ans=✗]: Let the days be 3 days.
+
+Now, we have to find the number of days in 3 days.
+
+Let the days be 3 days.
+
+Now, we have to
+  Sampling [term=✗  ans=✗]: Let x be the day of the week. Then,
+
+x + 1 = 3
+
+x = 3
+
+Therefore, the day of the week is 3.
+
+Now, let x be the day of
+
+  Prompt: Problem: There are 3 cats and 4 dogs in a room. How many ani
+  Greedy   [term=✗  ans=✗]: Let the number of cats be x.
+
+There are 3 cats and 4 dogs in a room.
+
+There are 3 cats and 4 dogs in a room.
+
+There ar
+  Sampling [term=✗  ans=✗]: We know that there are 3 cats and 4 dogs in a room. So, there are 3 cats and 4 dogs in the room. We have to find the num
+
+  Prompt: Problem: A pizza is cut into 8 equal slices. 3 slices are ea
+  Greedy   [term=✗  ans=✗]: Let the number of slices be x.
+
+Let the number of slices be y.
+
+Let the number of slices be z.
+
+Let the number of slic
+  Sampling [term=✗  ans=✗]: Let x be the number of slices eaten.
+
+Therefore, 8x = 3
+
+x = 3
+
+Hence, x = 3/8
+
+Hence, the correct answer is option B.
+
+  Greedy accuracy  : 0/5 = 0%
+  Sampling accuracy: 0/5 = 0%
+
+  ── SFT ──
+
+  Prompt: Problem: 5 + 3 = ?
+
+Solution:
+  Greedy   [term=✗  ans=✗]: Step 1: Step 1: To solve this problem, we need to determine the value of x, which represents the number of times the nu
+  Sampling [term=✓  ans=✗]: Step 1: Step 1: To solve this problem, we need to determine the value of x, which represents the number of hours 3 hour
+
+  Prompt: Problem: A bag has 2 red marbles and 6 blue marbles. How man
+  Greedy   [term=✓  ans=✗]: Step 1: Step 1: There are 2 red marbles and 6 blue marbles.
+
+Step 2: There are 2 red marbles and 6 blue marbles.
+
+Step
+  Sampling [term=✓  ans=✗]: Let's break down the information given:
+
+1. The bag has 2 red marbles and 6 blue marbles.
+2. The bag has 2 red marbles a
+
+  Prompt: Problem: If today is Wednesday, what day will it be in 3 day
+  Greedy   [term=✓  ans=✗]: Let's assume that the day is 3.
+
+Therefore, the answer is 3.
+
+Therefore, the answer is 3.
+
+Therefore, the answer is 3.
+  Sampling [term=✗  ans=✗]: Step 1: Step 1: To solve this problem, we need to determine the value of x, which represents the number of days in 3 da
+
+  Prompt: Problem: There are 3 cats and 4 dogs in a room. How many ani
+  Greedy   [term=✓  ans=✗]: Let's assume there are 3 cats and 4 dogs. Then there are 3 x 4 = 12 animals.
+
+Therefore, the answer is 12.
+
+Therefore, t
+  Sampling [term=✓  ans=✗]: Let's assume there are 3 cats, 4 dogs, and 5 cats in the room.
+
+Therefore, the answer is 5.
+
+Therefore, the answer is 5.
+
+  Prompt: Problem: A pizza is cut into 8 equal slices. 3 slices are ea
+  Greedy   [term=✓  ans=✗]: Step 1: 3 slices are eaten
+
+Step 2: 8 slices are eaten
+
+Step 3: 3 slices are eaten
+
+Step 4: 8 slices are eaten
+
+Step 5:
+  Sampling [term=✓  ans=✗]: The number of slices eaten is 8. So, the number of slices eaten is 8 x 8 = 16.
+
+Therefore, the answer is 16.
+
+Therefore,
+
+  Greedy accuracy  : 0/5 = 0%
+  Sampling accuracy: 0/5 = 0%
+
+  Model                    Greedy    Sampling      G≥S?
+  ----------------------------------------------------
+  BASE                         0%          0%         ✓
+  SFT                          0%          0%         ✓
+
+=================================================================
+  SECTION 5 — Knowledge Preservation
+  Base model scored 87% on natural completions.
+  SFT should not have degraded this. Target: ≥80%.
+=================================================================
+
+  ── BASE ──
+  ✓  The derivative of sin(x) with respect to x is
+       valid=-1.078  invalid=-1.664  margin=+0.586  (confident)
+  ✓  In a right triangle, the square of the hypotenuse equals the
+       valid=-0.176  invalid=-1.312  margin=+1.137  (confident)
+  ✓  According to Newton's third law of motion, for every action 
+       valid=-0.024  invalid=-2.953  margin=+2.929  (confident)
+  ✓  Atoms of the same element that have different numbers of neu
+       valid=-0.688  invalid=-2.656  margin=+1.969  (confident)
+  ✓  A hash table provides average-case O(1) time complexity for 
+       valid=-1.141  invalid=-2.719  margin=+1.578  (confident)
+  ✓  Prior research has established a correlation between sleep d
+       valid=-0.078  invalid=-6.344  margin=+6.266  (confident)
+  ✓  The value of pi is approximately
+       valid=-0.279  invalid=-0.973  margin=+0.693  (confident)
+  ✓  Natural selection, as proposed by Darwin, states that organi
+       valid=-1.766  invalid=-4.156  margin=+2.391  (confident)
+
+  Accuracy: 8/8 = 100%
+
+  ── SFT ──
+  ✓  The derivative of sin(x) with respect to x is
+       valid=-1.211  invalid=-1.305  margin=+0.094  (uncertain)
+  ✓  In a right triangle, the square of the hypotenuse equals the
+       valid=-0.180  invalid=-1.391  margin=+1.211  (confident)
+  ✓  According to Newton's third law of motion, for every action 
+       valid=-0.034  invalid=-2.922  margin=+2.888  (confident)
+  ✓  Atoms of the same element that have different numbers of neu
+       valid=-0.346  invalid=-2.562  margin=+2.217  (confident)
+  ✓  A hash table provides average-case O(1) time complexity for 
+       valid=-1.031  invalid=-2.797  margin=+1.766  (confident)
+  ✓  Prior research has established a correlation between sleep d
+       valid=-0.053  invalid=-6.750  margin=+6.697  (confident)
+  ✓  The value of pi is approximately
+       valid=-0.141  invalid=-1.055  margin=+0.914  (confident)
+  ✓  Natural selection, as proposed by Darwin, states that organi
+       valid=-1.836  invalid=-4.219  margin=+2.383  (confident)
+
+  Accuracy: 8/8 = 100%
+
+=================================================================
+  SECTION 6 — Generation Register & Fluency
+  Free-form prompts should still be coherent.
+  Format-triggered prompts should produce structured output.
+=================================================================
+
+  ── BASE ──
+
+  [FREE]   The process of photosynthesis converts light energy into chemical ener
+  photosynthesis and respiration. Photosynthesis is the process in which plants convert sunlight into energy, and respiration is the process in which plants convert water into chemical energy. The two main processes are photosynthesis and respiration. Photosynthesis is when plants absorb sunlight and 
+  rep=0.539  ttr=0.248  
+
+  [FREE]   Gradient descent is an iterative optimization algorithm used to minimi
+  a function over a collection of points. In this section, we will delve into the concept of gradient descent and its applications in machine learning, focusing on the implementation in Python.
+
+### Gradient Descent
+
+Gradient descent is an optimization algorithm used to find the values of parameters (
+  rep=0.000  ttr=0.563  
+
+  [FREE]   The difference between supervised and unsupervised machine learning is
+  that the data that is supervised is not directly available, but is instead provided to the machine learning algorithm.
+
+### Training a Model
+
+Once we have trained our model, we can train it using our training data. We will be using the `fit` method of our model to train it.
+
+```python
+# Train the mo
+  rep=0.066  ttr=0.548  
+
+  [FORMAT] Problem: Explain why the sky appears blue.
+
+Solution:
+  
+
+The sky appears blue because it is made up of different colors of light. The light from the Sun, the Sun, and the Moon makes up the sky. The blue color of the sky is due to the light from the Sun, the Sun, and the Moon. The sky is made up of light which is made up of red, blue, yellow, and green. 
+  rep=0.631  ttr=0.178  steps=0  term=✗
+
+  [FORMAT] Problem: What is the difference between a stack and a queue data struc
+  
+
+A stack is a type of data structure that is similar to a stack of data. It is often used to store the contents of a queue data structure. It is a type of data structure that is similar to a stack of data. A queue is a type of data structure that is similar to a stack of data. It is often used to s
+  rep=0.528  ttr=0.250  steps=0  term=✗
+
+  ── SFT ──
+
+  [FREE]   The process of photosynthesis converts light energy into chemical ener
+  photosynthesis and respiration. Photosynthesis uses light energy to convert light energy into chemical energy. It produces oxygen and water.
+
+There are two ways to convert light energy into chemical energy. One way is through photosynthesis. In this process, the light energy from the sun is used to 
+  rep=0.142  ttr=0.474  
+
+  [FREE]   Gradient descent is an iterative optimization algorithm used to minimi
+  some function.
+
+The gradient is a vector that represents the direction of steepest ascent of the function. It tells us the direction of steepest descent. The gradient is calculated as the sum of the gradients of the function at the current point and the next point.
+
+```python
+def gradient_descent(x,
+  rep=0.124  ttr=0.448  
+
+  [FREE]   The difference between supervised and unsupervised machine learning is
+  that supervised learning is used to find a function that is not directly observable. We can use this to learn a function that can be used to predict the value of a given input.
+
+```python
+def get_predict(f, x):
+    return f(x)
+
+def get_predict_function(f, x):
+    return get_predict(f, x)
+```
+
+The fu
+  rep=0.098  ttr=0.435  
+
+  [FORMAT] Problem: Explain why the sky appears blue.
+
+Solution:
+  
+Step 1: The sky appears blue.
+
+Step 2: The blue sky is not blue.
+
+Step 3: The blue sky is blue.
+
+Therefore, the answer is: the blue sky is blue.
+
+Therefore, the answer is: the blue sky is blue.
+
+Therefore, the answer is: the blue sky is blue.
+
+Therefore, the answer is: the blue sky is blue.
+
+Theref
+  rep=0.786  ttr=0.117  steps=3  term=✓
+
+  [FORMAT] Problem: What is the difference between a stack and a queue data struc
+  
+Step 1: A stack is a collection of items that are arranged in a specific order. It can hold a lot of information.
+
+Step 2: A queue is a group of items that are organized in a certain way. It can hold information.
+
+Step 3: The difference between a stack and a queue data structure is that the stack i
+  rep=0.418  ttr=0.261  steps=7  term=✗
+
+=================================================================
+  SECTION 7 — Direct Comparison on Base Eval Failures
+  Exact prompts that failed in base evaluation.
+  This is the clearest before/after signal.
+=================================================================
+
+  ── BASE ──
+
+  ✗  [ICL_water_freeze]
+       Expected : ice
+       Extracted: 4.
+       Format   : steps=0  term=✗
+       Output   : 
+
+1. The water is cooled below 0 degrees Celsius.
+
+2. The water is cooled below 0 degrees Celsius.
+
+3. The water is cooled below 0 degrees Celsius.
+
+4. The water is cooled below 0 degrees Celsius.
+
+Concept Problem: Water is cooled below 0 degrees Cel
+
+  ✗  [ICL_sequence_5_10_15_20]
+       Expected : 25
+       Extracted: 15
+       Format   : steps=0  term=✗
+       Output   : 
+
+Given that the sequence is 5, 10, 15, 20, ....
+
+So, 5, 10, 15, 20, ....
+
+So, 5, 10, 15, 20, ....
+
+So, 5, 10, 15, 20, ....
+
+So, 5, 10, 15, 20, ....
+
+So, 5, 10, 15, 20, ....
+
+So, 5, 10, 15, 20, ....
+
+So, 5, 10, 15, 20, ....
+
+So, 5, 10, 15, 20, ....
+
+
+
+  ✗  [CoT_cats_dogs]
+       Expected : 7
+       Extracted: 2
+       Format   : steps=0  term=✗
+       Output   : 
+
+Let x be the number of cats in the room.
+
+Then, we have,
+
+3x + 4 = 3(x+1)
+
+⇒ x = 3
+
+Therefore, there are 3 cats in the room.
+
+Question 13.
+
+What is the greatest common factor of 4, 3, 2, 2, 10?
+
+Solution:
+
+Let x be the greatest common factor of 4, 
+
+  ✗  [MC_train_distance]
+       Expected : 150
+       Extracted: 100
+       Format   : steps=0  term=✗
+       Output   : 
+
+Given,
+
+Speed of train = 60 mph
+
+Speed of train = 2.5 mph
+
+Speed of train = 2.5 × 60 mph = 100 mph
+
+Speed of train = 100 mph
+
+Speed of train = 100 mph
+
+Speed of train = 100 mph
+
+Speed of train = 100 mph
+
+Speed of train = 100 mph
+
+Speed of train = 1
+
+  ✗  [logic_whiskers]
+       Expected : animal
+       Extracted: 2.
+       Format   : steps=0  term=✗
+       Output   : 
+
+Given,
+
+The cat is a _____.
+
+A _____ cat is a _____.
+
+A _____ cat is a _____.
+
+A _____ cat is a _____.
+
+A _____ is a _____.
+
+Therefore, Whiskers is a ___.
+
+Question 2.
+
+The ratio of the total weight of a dog and the weight of a cat is 1 : 2. If the
+
+  ✗  [ICL_factory_150]
+       Expected : 900
+       Extracted: 30
+       Format   : steps=0  term=✗
+       Output   : Let x be the number of units produced in 6 days. Then, we have,
+
+$150 \times 6 = 1500 \times x$
+
+$1500 \times 6 = x \times 1500$
+
+$x = 15000 \times 6$
+
+$x = 150000 \times 6$
+
+$x = 15000000$
+
+Hence, the number of units produced in 6 days is 15000000.
+
+
+  Accuracy on base failures: 0/6 = 0%
+
+  ── SFT ──
+
+  ✗  [ICL_water_freeze]
+       Expected : ice
+       Extracted: 0
+       Format   : steps=0  term=✓
+       Output   : The water is cooled below 0 degrees Celsius.
+
+Therefore, the answer is 0.
+
+Therefore, the answer is 0.
+
+Therefore, the answer is 0.
+
+Therefore, the answer is 0.
+
+Therefore, the answer is 0.
+
+Therefore, the answer is 0.
+
+Therefore, the answer is 0.
+
+T
+
+  ✗  [ICL_sequence_5_10_15_20]
+       Expected : 25
+       Extracted: 2
+       Format   : steps=1  term=✗
+       Output   : The sequence is given by the formula:
+
+Step 1: 5, 10, 15, 20, 5, 10, 15, 20, 15, 15, 15, 20, 15, 15, 15, 20, 15, 15, 20, 15, 15, 15, 20, 15, 15, 15, 20, 15, 15, 20, 15, 15, 20, 15, 15, 15, 20, 15, 15, 15, 20, 15, 15, 15, 20, 15, 15, 15, 20, 15, 15, 1
+
+  ✗  [CoT_cats_dogs]
+       Expected : 7
+       Extracted: 12
+       Format   : steps=0  term=✓
+       Output   : Let's say there are 3 cats, 4 dogs, and 4 cats in the room. There are 3 cats + 4 dogs + 4 dogs = 12 cats in total.
+
+Therefore, the answer is 12.
+
+Therefore, the answer is 12.
+
+Therefore, the answer is 12.
+
+Therefore, the answer is 12.
+
+Therefore, the
+
+  ✗  [MC_train_distance]
+       Expected : 150
+       Extracted: 40
+       Format   : steps=0  term=✓
+       Output   : Let the train travel 60 miles per hour. Then, the distance it travels is 60/60 = 40 miles.
+
+Therefore, the answer is 40.
+
+Therefore, the answer is 40.
+
+Therefore, the answer is 40.
+
+Therefore, the answer is 40.
+
+Therefore, the answer is 40.
+
+Therefor
+
+  ✓  [logic_whiskers]
+       Expected : animal
+       Extracted: 1
+       Format   : steps=11  term=✗
+       Output   : 
+Step 1: The question asks: All cats are animals. Whiskers is a cat.
+
+Step 2: The question asks: All cats are animals. Whiskers is a cat.
+
+Step 3: Step 4: To solve this problem, we need to determine the value of x, which represents the number of cats
+
+  ✗  [ICL_factory_150]
+       Expected : 900
+       Extracted: 150
+       Format   : steps=0  term=✓
+       Output   : Let's calculate the number of days it produces in 6 days:
+
+Number of days it produces in 6 days = 150
+
+Therefore, the answer is 150.
+
+Therefore, the answer is 150.
+
+Therefore, the answer is 150.
+
+Therefore, the answer is 150.
+
+Therefore, the answer i
+
+  Accuracy on base failures: 1/6 = 17%
+
+  Improvement Summary:
+  Problem                                BASE         SFT
+  -------------------------------------------------------
+  ICL_water_freeze                          ✗           ✗
+  ICL_sequence_5_10_15_20                   ✗           ✗
+  CoT_cats_dogs                             ✗           ✗
+  MC_train_distance                         ✗           ✗
+  logic_whiskers                            ✗           ✓
+  ICL_factory_150                           ✗           ✗
+
+=================================================================
+  SFT EVALUATION — FINAL REPORT
+=================================================================
+
+  Metric                                     BASE         SFT
+  ------------------------------------------------------------
+  Format: Step N: rate                         0%         38%
+  Format: Termination rate                     0%         88%
+  Format: Steps advance rate                   0%         12%
+  Arithmetic accuracy                          0%          0%
+  CoT quality score (/4)                     0.75        1.75
+  CoT answer accuracy                          0%          0%
+  Greedy answer accuracy                       0%          0%
+  Knowledge preservation                     100%        100%
+  Base failure recovery                        0%         17%
+
+  =======================================================
+  SFT VERDICT
+  =======================================================
+
+  Format compliance  : 38%  (✗ Format not learned)
+  Termination rate   : 88%  (✓ Model terminates cleanly)
+  Arithmetic accuracy: 0%  (✗ Still broken)
+  Knowledge preserved: 100%  (✓ No forgetting)
+
+  ~ Partial success — consider a second SFT run with more math data
+=================================================================
+

@@ -94,6 +94,2656 @@ print("\nAfter:")
 print_ram("Status")
 print(f"\n{'='*60}")
 ========================
+<<collect_sft_data.py>>
+# collect_sft_data.py
+
+import os
+import re
+import sys
+import json
+import random
+import hashlib
+import logging
+from datetime import datetime
+from collections import defaultdict
+
+from datasets import load_dataset
+from huggingface_hub import login
+from config import SLMConfig
+
+cfg = SLMConfig()
+if cfg.hf_token:
+    login(token=cfg.hf_token)
+
+# ── Configuration ──────────────────────────────────────────────────────────────
+
+SEED       = 42
+OUTPUT_DIR = "data/sft"
+RAW_DIR    = os.path.join(OUTPUT_DIR, "raw")       # one file per dataset
+MASTER_DIR = os.path.join(OUTPUT_DIR, "master")    # merged + deduped
+LOG_FILE   = os.path.join(OUTPUT_DIR, "collection_log.txt")
+VAL_RATIO  = 0.05
+
+DATASET_TARGETS = {
+    "gsm8k"         :  7_000,
+    "metamath"      : 45_000,
+    "orca_math"     : 20_000,
+    "math_lighteval":  5_000,
+    "logiqa"        :  5_500,
+    "arc_challenge" :  1_100,
+    "arc_easy"      :  2_200,
+    "sciq"          : 10_000,
+    "openbookqa"    :  4_500,
+    "openhermes"    : 40_000,
+}
+
+OPENHERMES_KEEP_CATEGORIES = {
+    "coding", "mathematics", "science", "data_analysis",
+    "reasoning", "stem", "computer_science",
+    "math", "logic", "algorithm",
+}
+
+random.seed(SEED)
+
+# ── Logging ────────────────────────────────────────────────────────────────────
+
+for d in [OUTPUT_DIR, RAW_DIR, MASTER_DIR]:
+    os.makedirs(d, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler(sys.stdout),
+    ]
+)
+log = logging.getLogger()
+
+
+# ── I/O helpers ────────────────────────────────────────────────────────────────
+
+def raw_path(name):
+    return os.path.join(RAW_DIR, f"{name}.jsonl")
+
+def save_jsonl(examples, path):
+    with open(path, "w", encoding="utf-8") as f:
+        for ex in examples:
+            f.write(json.dumps(ex, ensure_ascii=False) + "\n")
+    log.info(f"    → Saved {len(examples):,} examples to {path}")
+
+def load_jsonl(path):
+    examples = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                examples.append(json.loads(line))
+    return examples
+
+def already_collected(name):
+    p = raw_path(name)
+    if os.path.exists(p):
+        count = sum(1 for _ in open(p, encoding="utf-8"))
+        log.info(f"  [{name}] already exists — {count:,} examples. Skipping collection.")
+        return True
+    return False
+
+
+# ── Format + Quality helpers ───────────────────────────────────────────────────
+
+def build_example(source, category, problem, steps, answer, difficulty="medium"):
+    step_lines = "\n\n".join(
+        f"Step {i+1}: {s.strip()}"
+        for i, s in enumerate(steps) if s.strip()
+    )
+    solution = f"{step_lines}\n\nTherefore, the answer is {answer}."
+    uid = hashlib.md5((source + problem).encode("utf-8")).hexdigest()[:12]
+    return {
+        "id"        : f"{source}_{uid}",
+        "source"    : source,
+        "category"  : category,
+        "difficulty": difficulty,
+        "problem"   : problem.strip(),
+        "solution"  : solution.strip(),
+        "answer"    : str(answer).strip(),
+    }
+
+def is_quality(problem, solution, answer,
+               min_prob_words=10, max_prob_words=200,
+               min_sol_words=20,  max_sol_words=600):
+    if not problem or not solution or not answer:
+        return False
+    pw = len(problem.split())
+    sw = len(solution.split())
+    if not (min_prob_words <= pw <= max_prob_words):
+        return False
+    if not (min_sol_words <= sw <= max_sol_words):
+        return False
+    sol_words = solution.lower().split()
+    if len(sol_words) > 20:
+        ngrams = [tuple(sol_words[i:i+5]) for i in range(len(sol_words) - 5)]
+        if ngrams and len(set(ngrams)) / len(ngrams) < 0.5:
+            return False
+    if not re.search(r"\d", solution):
+        return False
+    if len(str(answer).strip()) == 0:
+        return False
+    return True
+
+def log_dataset_stats(name, examples):
+    if not examples:
+        log.info(f"    [stats] No examples.")
+        return
+    sol_lens = [len(ex["solution"].split()) for ex in examples]
+    by_diff  = defaultdict(int)
+    for ex in examples:
+        by_diff[ex["difficulty"]] += 1
+    log.info(f"    [stats] count={len(examples):,}  "
+             f"avg_sol={sum(sol_lens)//len(sol_lens)}w  "
+             f"min={min(sol_lens)}w  max={max(sol_lens)}w  "
+             f"diff={dict(by_diff)}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PHASE 1 — COLLECT + WRITE EACH DATASET INDIVIDUALLY
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── 1. GSM8K ──────────────────────────────────────────────────────────────────
+
+def clean_gsm8k_solution(raw):
+    lines   = raw.strip().split("\n")
+    answer  = None
+    content = []
+    for line in lines:
+        line = line.strip()
+        if line.startswith("####"):
+            answer = line.replace("####", "").strip()
+        elif line:
+            cleaned = re.sub(r"<<[^>]+>>", "", line).strip()
+            if cleaned:
+                content.append(cleaned)
+    steps = []
+    for line in content:
+        for s in re.split(r"(?<=[.!?])\s+", line):
+            s = s.strip()
+            if s:
+                steps.append(s)
+    return steps, answer
+
+def collect_gsm8k():
+    name = "gsm8k"
+    if already_collected(name): return
+    log.info(f"\n{'='*55}\n  [1/10] Collecting GSM8K\n{'='*55}")
+    target   = DATASET_TARGETS[name]
+    ds       = load_dataset("openai/gsm8k", "main")
+    examples = []
+    for split in ["train", "test"]:
+        if split not in ds: continue
+        for row in ds[split]:
+            steps, answer = clean_gsm8k_solution(row["answer"])
+            if not steps or not answer: continue
+            ex = build_example("gsm8k", "math_arithmetic",
+                               row["question"], steps, answer, "medium")
+            if is_quality(ex["problem"], ex["solution"], ex["answer"]):
+                examples.append(ex)
+    random.shuffle(examples)
+    examples = examples[:target]
+    log_dataset_stats(name, examples)
+    save_jsonl(examples, raw_path(name))
+
+# ── 2. MetaMathQA ─────────────────────────────────────────────────────────────
+
+def clean_metamath_response(response):
+    text = re.sub(r"^let'?s?\s+think\s+step\s+by\s+step\.?\s*", "",
+                  response.strip(), flags=re.IGNORECASE)
+    answer = None
+    m = re.search(r"the answer is[:\s]+([^\n.]+)", text, re.IGNORECASE)
+    if m:
+        answer = m.group(1).strip().rstrip(".")
+        text   = text[:m.start()].strip()
+    if not answer:
+        m = re.search(r"####\s*(.+)", text)
+        if m:
+            answer = m.group(1).strip()
+            text   = text[:m.start()].strip()
+    if not answer:
+        return None, None
+    text  = re.sub(r"^\d+\.\s*",      "", text, flags=re.MULTILINE)
+    text  = re.sub(r"^Step\s+\d+:?\s*","", text, flags=re.MULTILINE|re.IGNORECASE)
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    steps = [l for l in lines if len(l.split()) >= 3]
+    return steps, answer
+
+def collect_metamath():
+    name = "metamath"
+    if already_collected(name): return
+    log.info(f"\n{'='*55}\n  [2/10] Collecting MetaMathQA\n{'='*55}")
+    target     = DATASET_TARGETS[name]
+    keep_types = {"GSM_Rephrased", "MATH_Rephrased"}
+    ds         = load_dataset("meta-math/MetaMathQA", streaming=True)
+    examples   = []
+    for row in ds["train"]:
+        if row.get("type","") not in keep_types: continue
+        steps, answer = clean_metamath_response(row["response"])
+        if not steps or not answer: continue
+        diff = "medium" if "GSM" in row.get("type","") else "hard"
+        ex   = build_example("metamath", "math_arithmetic",
+                             row["query"], steps, answer, diff)
+        if is_quality(ex["problem"], ex["solution"], ex["answer"]):
+            examples.append(ex)
+        if len(examples) >= target * 2:   # early exit — we have enough
+            break
+    random.shuffle(examples)
+    examples = examples[:target]
+    log_dataset_stats(name, examples)
+    save_jsonl(examples, raw_path(name))
+
+# ── 3. Orca-Math ──────────────────────────────────────────────────────────────
+
+def clean_orca_math_answer(text):
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    answer = None
+    for pattern in [r"####\s*([^\n]+)",
+                    r"the answer is[:\s]+([^\n.]+)",
+                    r"answer[:\s]+([^\n.]+)",
+                    r"=\s*\*?\*?\$?([\d,\.]+)\*?\*?$"]:
+        m = re.search(pattern, text, re.IGNORECASE|re.MULTILINE)
+        if m:
+            answer = m.group(1).strip().rstrip(".").replace(",","")
+            break
+    if not answer:
+        lines = [l.strip() for l in text.split("\n") if re.search(r"\d", l)]
+        if lines:
+            nums = re.findall(r"[\d,\.]+", lines[-1])
+            if nums:
+                answer = nums[-1].replace(",","")
+    if not answer:
+        return None, None
+    lines = re.split(r"\n+|\.\s+", text)
+    steps = []
+    for line in lines:
+        line = re.sub(r"^\d+[\.\)]\s*", "", line.strip())
+        if len(line.split()) >= 5 and re.search(r"\d", line):
+            steps.append(line)
+    if not steps:
+        steps = [text[:300]]
+    return steps[:8], answer
+
+def collect_orca_math():
+    name = "orca_math"
+    if already_collected(name): return
+    log.info(f"\n{'='*55}\n  [3/10] Collecting Orca-Math\n{'='*55}")
+    target   = DATASET_TARGETS[name]
+    ds       = load_dataset("microsoft/orca-math-word-problems-200k")
+    examples = []
+    for row in ds["train"]:
+        steps, answer = clean_orca_math_answer(row["answer"])
+        if not steps or not answer: continue
+        ex = build_example("orca_math", "math_arithmetic",
+                           row["question"], steps, answer, "medium")
+        if is_quality(ex["problem"], ex["solution"], ex["answer"]):
+            examples.append(ex)
+    random.shuffle(examples)
+    examples = examples[:target]
+    log_dataset_stats(name, examples)
+    save_jsonl(examples, raw_path(name))
+
+# ── 4. MATH (lighteval) ───────────────────────────────────────────────────────
+
+MATH_DIFF_MAP = {"Level 1":"easy","Level 2":"easy",
+                 "Level 3":"medium","Level 4":"hard","Level 5":"hard"}
+
+def clean_math_solution(solution):
+    boxed = re.search(r"\\boxed\{([^}]+)\}", solution)
+    if not boxed: return None, None
+    answer = boxed.group(1).strip()
+    text   = solution[:boxed.start()].strip()
+    paras  = [p.strip() for p in re.split(r"\n\n+", text) if p.strip()]
+    if not paras:
+        paras = [s.strip() for s in re.split(r"\.(?=\s+[A-Z])", text) if s.strip()]
+    steps = [p for p in paras if len(p.split()) >= 5]
+    return steps, answer
+
+def collect_math_lighteval():
+    name = "math_lighteval"
+    if already_collected(name): return
+    log.info(f"\n{'='*55}\n  [4/10] Collecting MATH (EleutherAI/hendrycks_math)\n{'='*55}")
+    target      = DATASET_TARGETS[name]
+    keep_levels = {"Level 1", "Level 2", "Level 3"}
+    examples    = []
+
+    # Dataset has one split per math subject — iterate all of them
+    subjects = [
+        "algebra", "counting_and_probability", "geometry",
+        "intermediate_algebra", "number_theory", "prealgebra", "precalculus"
+    ]
+
+    for subject in subjects:
+        try:
+            ds = load_dataset("EleutherAI/hendrycks_math", subject)
+        except Exception as e:
+            log.warning(f"    Could not load subject '{subject}': {e}")
+            continue
+
+        for split in ["train", "test"]:
+            if split not in ds: continue
+            for row in ds[split]:
+                if row.get("level", "") not in keep_levels: continue
+                steps, answer = clean_math_solution(row["solution"])
+                if not steps or not answer: continue
+                diff = MATH_DIFF_MAP.get(row.get("level", ""), "medium")
+                ex   = build_example("math_lighteval", "math_hard",
+                                     row["problem"], steps, answer, diff)
+                if is_quality(ex["problem"], ex["solution"], ex["answer"],
+                              min_sol_words=15):
+                    examples.append(ex)
+
+    random.shuffle(examples)
+    examples = examples[:target]
+    log_dataset_stats(name, examples)
+    save_jsonl(examples, raw_path(name))
+
+# ── 5. LogiQA ─────────────────────────────────────────────────────────────────
+
+LOGIQA_LABELS = ["A","B","C","D"]
+
+def format_logiqa_example(row):
+    context  = row.get("context","").strip()
+    question = row.get("query", row.get("question","")).strip()
+    options  = row.get("options",[])
+    label    = row.get("label", row.get("correct_option", 0))
+    if not context or not question or not options: return None
+    if isinstance(label, str):
+        label = LOGIQA_LABELS.index(label.upper()) \
+                if label.upper() in LOGIQA_LABELS else int(label)
+    if label >= len(options): return None
+    correct_text = options[label].strip()
+    option_lines = "\n".join(f"{LOGIQA_LABELS[i]}) {opt.strip()}"
+                             for i, opt in enumerate(options))
+    problem = f"{context}\n\nQuestion: {question}\n\nOptions:\n{option_lines}"
+    sents   = [s.strip() for s in re.split(r"[.!?]", context) if s.strip()]
+    key_info = sents[0] if sents else context[:150]
+    wrong    = [LOGIQA_LABELS[i] for i in range(len(options)) if i != label]
+    steps = [
+        f"Identify the key information from the passage: {key_info}.",
+        f"The question asks: {question}",
+        f"Evaluate the options against the passage. "
+        f"Options {', '.join(wrong)} are not directly supported by the key information. "
+        f"Option {LOGIQA_LABELS[label]} states: '{correct_text}', "
+        f"which is consistent with the passage.",
+        f"Option {LOGIQA_LABELS[label]} is correct.",
+    ]
+    return build_example("logiqa", "logical_deduction", problem, steps,
+                         f"{LOGIQA_LABELS[label]}: {correct_text}", "medium")
+
+def collect_logiqa():
+    name = "logiqa"
+    if already_collected(name): return
+    log.info(f"\n{'='*55}\n  [5/10] Collecting LogiQA (GitHub raw)\n{'='*55}")
+    import urllib.request, io
+
+    target   = DATASET_TARGETS[name]
+    examples = []
+
+    # Original LogiQA data files from the authors' GitHub
+    urls = {
+        "train" : "https://raw.githubusercontent.com/lgw863/LogiQA-dataset/master/Train.txt",
+        "val"   : "https://raw.githubusercontent.com/lgw863/LogiQA-dataset/master/Eval.txt",
+        "test"  : "https://raw.githubusercontent.com/lgw863/LogiQA-dataset/master/Test.txt",
+    }
+
+    def parse_logiqa_txt(text):
+        """
+        LogiQA .txt format:
+            <blank line>
+            <label: 'a'/'b'/'c'/'d'>
+            <context paragraph>
+            <question>
+            a) <option>
+            b) <option>
+            c) <option>
+            d) <option>
+        Blocks are separated by blank lines.
+        """
+        label_map = {"a": 0, "b": 1, "c": 2, "d": 3}
+        records   = []
+        blocks    = re.split(r"\n\s*\n", text.strip())
+
+        for block in blocks:
+            lines = [l.strip() for l in block.strip().split("\n") if l.strip()]
+            if len(lines) < 7: continue
+            try:
+                label_char = lines[0].lower().strip()
+                if label_char not in label_map: continue
+                label   = label_map[label_char]
+                context = lines[1]
+                question = lines[2]
+                opts    = []
+                for line in lines[3:]:
+                    m = re.match(r"^[abcdABCD][.)]\s*(.+)", line)
+                    if m:
+                        opts.append(m.group(1).strip())
+                if len(opts) != 4: continue
+                records.append({
+                    "label"   : label,
+                    "context" : context,
+                    "question": question,
+                    "options" : opts,
+                })
+            except Exception:
+                continue
+        return records
+
+    for split_name, url in urls.items():
+        try:
+            log.info(f"    Downloading {split_name} from GitHub...")
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                text = resp.read().decode("utf-8")
+            records = parse_logiqa_txt(text)
+            log.info(f"    Parsed {len(records)} records from {split_name}")
+        except Exception as e:
+            log.warning(f"    Could not download {split_name}: {e}")
+            continue
+
+        for row in records:
+            context      = row["context"]
+            question     = row["question"]
+            options      = row["options"]
+            label        = row["label"]
+            correct_text = options[label].strip()
+
+            option_lines = "\n".join(f"{LOGIQA_LABELS[i]}) {opt.strip()}"
+                                     for i, opt in enumerate(options))
+            problem = f"{context}\n\nQuestion: {question}\n\nOptions:\n{option_lines}"
+
+            sents    = [s.strip() for s in re.split(r"[.!?]", context) if s.strip()]
+            key_info = sents[0] if sents else context[:150]
+            wrong    = [LOGIQA_LABELS[i] for i in range(len(options)) if i != label]
+
+            steps = [
+                f"Identify the key information from the passage: {key_info}.",
+                f"The question asks: {question}",
+                f"Evaluate the options against the passage. "
+                f"Options {', '.join(wrong)} are not directly supported by the key information. "
+                f"Option {LOGIQA_LABELS[label]} states: '{correct_text}', "
+                f"which is consistent with the passage.",
+                f"Option {LOGIQA_LABELS[label]} is correct.",
+            ]
+            ex = build_example("logiqa", "logical_deduction", problem, steps,
+                               f"{LOGIQA_LABELS[label]}: {correct_text}", "medium")
+            if is_quality(ex["problem"], ex["solution"], ex["answer"],
+                          min_prob_words=30, min_sol_words=30):
+                examples.append(ex)
+
+    random.shuffle(examples)
+    examples = examples[:target]
+    log_dataset_stats(name, examples)
+    save_jsonl(examples, raw_path(name))
+
+# ── 6. ARC-Challenge ──────────────────────────────────────────────────────────
+
+def format_arc_example(row, source_name, difficulty):
+    question   = row["question"].strip()
+    choices    = row["choices"]
+    answer_key = row["answerKey"].strip()
+    texts, labels = choices["text"], choices["label"]
+    if not texts or not labels or not answer_key: return None
+    correct_text = None
+    for lbl, txt in zip(labels, texts):
+        if str(lbl).strip().upper() == answer_key.upper():
+            correct_text = txt.strip(); break
+    if not correct_text: return None
+    option_lines = "\n".join(f"{str(lbl).strip()}) {txt.strip()}"
+                             for lbl, txt in zip(labels, texts))
+    problem   = f"{question}\n\nOptions:\n{option_lines}"
+    wrong     = [str(lbl).strip() for lbl, txt in zip(labels, texts)
+                 if str(lbl).strip().upper() != answer_key.upper()]
+    steps = [
+        f"Read the question carefully: {question}",
+        f"Consider each option. The question asks about a specific scientific concept. "
+        f"Options {', '.join(wrong)} do not correctly answer what is asked.",
+        f"Option {answer_key} states: '{correct_text}', which correctly answers the question.",
+    ]
+    return build_example(source_name, "science_reasoning", problem, steps,
+                         f"{answer_key}: {correct_text}", difficulty)
+
+def collect_arc_challenge():
+    name = "arc_challenge"
+    if already_collected(name): return
+    log.info(f"\n{'='*55}\n  [6/10] Collecting ARC-Challenge\n{'='*55}")
+    target   = DATASET_TARGETS[name]
+    ds       = load_dataset("allenai/ai2_arc", "ARC-Challenge")
+    examples = []
+    for split in ["train","validation","test"]:
+        if split not in ds: continue
+        for row in ds[split]:
+            ex = format_arc_example(row, "arc_challenge", "hard")
+            if ex and is_quality(ex["problem"], ex["solution"], ex["answer"],
+                                  min_prob_words=10, min_sol_words=20):
+                examples.append(ex)
+    random.shuffle(examples)
+    examples = examples[:target]
+    log_dataset_stats(name, examples)
+    save_jsonl(examples, raw_path(name))
+
+# ── 7. ARC-Easy ───────────────────────────────────────────────────────────────
+
+def collect_arc_easy():
+    name = "arc_easy"
+    if already_collected(name): return
+    log.info(f"\n{'='*55}\n  [7/10] Collecting ARC-Easy\n{'='*55}")
+    target   = DATASET_TARGETS[name]
+    ds       = load_dataset("allenai/ai2_arc", "ARC-Easy")
+    examples = []
+    for split in ["train","validation","test"]:
+        if split not in ds: continue
+        for row in ds[split]:
+            ex = format_arc_example(row, "arc_easy", "easy")
+            if ex and is_quality(ex["problem"], ex["solution"], ex["answer"],
+                                  min_prob_words=10, min_sol_words=20):
+                examples.append(ex)
+    random.shuffle(examples)
+    examples = examples[:target]
+    log_dataset_stats(name, examples)
+    save_jsonl(examples, raw_path(name))
+
+# ── 8. SciQ ───────────────────────────────────────────────────────────────────
+
+def format_sciq_example(row):
+    question       = row["question"].strip()
+    correct_answer = row["correct_answer"].strip()
+    support        = row.get("support","").strip()
+    distractors    = [row.get(f"distractor{i}","").strip() for i in range(1,4)]
+    distractors    = [d for d in distractors if d]
+    if not question or not correct_answer: return None
+    all_opts = distractors + [correct_answer]
+    random.shuffle(all_opts)
+    labels        = ["A","B","C","D"]
+    correct_label = None
+    option_lines  = []
+    for i, opt in enumerate(all_opts[:4]):
+        option_lines.append(f"{labels[i]}) {opt}")
+        if opt == correct_answer:
+            correct_label = labels[i]
+    if not correct_label: return None
+    problem = f"{question}\n\nOptions:\n" + "\n".join(option_lines)
+    steps   = []
+    if support and len(support.split()) >= 10:
+        steps.append(f"Background knowledge: {support}")
+    steps.append(f"The question asks: {question}")
+    steps.append(f"Based on the supporting information, '{correct_answer}' is correct. "
+                 f"Option {correct_label} states this directly.")
+    return build_example("sciq", "science_reasoning", problem, steps,
+                         f"{correct_label}: {correct_answer}", "easy")
+
+def collect_sciq():
+    name = "sciq"
+    if already_collected(name): return
+    log.info(f"\n{'='*55}\n  [8/10] Collecting SciQ\n{'='*55}")
+    target   = DATASET_TARGETS[name]
+    ds       = load_dataset("allenai/sciq")
+    examples = []
+    for split in ["train","validation","test"]:
+        if split not in ds: continue
+        for row in ds[split]:
+            if not row.get("support","").strip(): continue
+            ex = format_sciq_example(row)
+            if ex and is_quality(ex["problem"], ex["solution"], ex["answer"],
+                                  min_prob_words=10, min_sol_words=20):
+                examples.append(ex)
+    random.shuffle(examples)
+    examples = examples[:target]
+    log_dataset_stats(name, examples)
+    save_jsonl(examples, raw_path(name))
+
+# ── 9. OpenBookQA ─────────────────────────────────────────────────────────────
+
+def format_openbookqa_example(row):
+    question   = row["question_stem"].strip()
+    choices    = row["choices"]
+    answer_key = row["answerKey"].strip()
+    core_fact  = row.get("fact1","").strip()
+    texts, labels = choices["text"], choices["label"]
+    correct_text  = None
+    for lbl, txt in zip(labels, texts):
+        if str(lbl).strip().upper() == answer_key.upper():
+            correct_text = txt.strip(); break
+    if not correct_text: return None
+    option_lines = "\n".join(f"{str(lbl).strip()}) {txt.strip()}"
+                             for lbl, txt in zip(labels, texts))
+    problem = f"{question}\n\nOptions:\n{option_lines}"
+    steps   = []
+    if core_fact:
+        steps.append(f"Relevant scientific fact: {core_fact}")
+    steps.append(f"The question asks: {question}")
+    steps.append(f"Applying the scientific fact to the options, "
+                 f"option {answer_key} ('{correct_text}') is the correct answer.")
+    return build_example("openbookqa", "science_reasoning", problem, steps,
+                         f"{answer_key}: {correct_text}", "easy")
+
+def collect_openbookqa():
+    name = "openbookqa"
+    if already_collected(name): return
+    log.info(f"\n{'='*55}\n  [9/10] Collecting OpenBookQA\n{'='*55}")
+    target   = DATASET_TARGETS[name]
+    ds       = load_dataset("allenai/openbookqa", "main")
+    examples = []
+    for split in ["train","validation","test"]:
+        if split not in ds: continue
+        for row in ds[split]:
+            ex = format_openbookqa_example(row)
+            if ex and is_quality(ex["problem"], ex["solution"], ex["answer"],
+                                  min_prob_words=10, min_sol_words=15):
+                examples.append(ex)
+    random.shuffle(examples)
+    examples = examples[:target]
+    log_dataset_stats(name, examples)
+    save_jsonl(examples, raw_path(name))
+
+# ── 10. OpenHermes-2.5 ────────────────────────────────────────────────────────
+
+def extract_openhermes_pair(row):
+    convs      = row.get("conversations",[])
+    human_turn = None
+    gpt_turn   = None
+    for turn in convs:
+        if turn.get("from") == "human" and human_turn is None:
+            human_turn = turn.get("value","").strip()
+        elif turn.get("from") == "gpt" and gpt_turn is None:
+            gpt_turn = turn.get("value","").strip()
+    return human_turn, gpt_turn
+
+def is_openhermes_reasoning(problem, solution):
+    if not problem or not solution: return False
+    sol_lower    = solution.lower()
+    has_steps    = bool(re.search(r"step\s+\d|first,|second,|third,|finally,|therefore", sol_lower))
+    has_calc     = bool(re.search(r"\d+\s*[\+\-\*\/=]\s*\d+", solution))
+    has_markers  = bool(re.search(r"because|since|thus|hence|as a result|which means", sol_lower))
+    has_numbered = bool(re.search(r"^\d+[\.\)]\s+", solution, re.MULTILINE))
+    return has_steps or has_calc or (has_markers and has_numbered)
+
+def format_openhermes_solution(problem, solution):
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", solution)
+    text = re.sub(r"^#+\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    answer = None
+    for pattern in [r"therefore[,\s]+the answer is[:\s]+([^\n.]+)",
+                    r"####\s*([^\n]+)",
+                    r"the answer is[:\s]+([^\n.]+)",
+                    r"answer[:\s]+([^\n.]+)"]:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            answer = m.group(1).strip().rstrip(".")
+            text   = text[:m.start()].strip()
+            break
+    if not answer:
+        sentences = [s.strip() for s in re.split(r"[.!?]", text) if s.strip()]
+        answer    = sentences[-1][:80] if sentences else "See solution."
+        if sentences:
+            text  = ". ".join(sentences[:-1])
+    numbered = re.split(r"\n\d+[\.\)]\s+", "\n" + text)
+    if len(numbered) > 2:
+        steps = [s.strip() for s in numbered if s.strip()]
+    else:
+        stepped = re.split(r"\nStep\s+\d+:?\s*", "\n" + text, flags=re.IGNORECASE)
+        if len(stepped) > 2:
+            steps = [s.strip() for s in stepped if s.strip()]
+        else:
+            paras = [p.strip() for p in re.split(r"\n\n+", text) if p.strip()]
+            steps = paras if paras else [text[:500]]
+    steps = [s[:300] for s in steps[:8] if len(s.split()) >= 5]
+    return steps, answer
+
+def collect_openhermes():
+    name = "openhermes"
+    if already_collected(name): return
+    log.info(f"\n{'='*55}\n  [10/10] Collecting OpenHermes-2.5\n{'='*55}")
+    target   = DATASET_TARGETS[name]
+    ds       = load_dataset("teknium/OpenHermes-2.5")
+    examples = []
+    for row in ds["train"]:
+        category = str(row.get("category","")).lower()
+        source   = str(row.get("source","")).lower()
+        if not any(k in category or k in source
+                   for k in OPENHERMES_KEEP_CATEGORIES):
+            continue
+        problem, solution = extract_openhermes_pair(row)
+        if not problem or not solution: continue
+        if not is_openhermes_reasoning(problem, solution): continue
+        steps, answer = format_openhermes_solution(problem, solution)
+        if not steps: continue
+        ex = build_example("openhermes", "cs_technical",
+                           problem, steps, answer, "medium")
+        if is_quality(ex["problem"], ex["solution"], ex["answer"],
+                      min_prob_words=10, max_prob_words=300,
+                      min_sol_words=30,  max_sol_words=500):
+            examples.append(ex)
+        if len(examples) >= target * 3:
+            break
+    random.shuffle(examples)
+    examples = examples[:target]
+    log_dataset_stats(name, examples)
+    save_jsonl(examples, raw_path(name))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PHASE 2 — PRE-PROCESS EACH RAW FILE
+# Reload each raw file, apply any dataset-specific post-processing,
+# and write a clean processed file.
+# ══════════════════════════════════════════════════════════════════════════════
+
+PROCESSED_DIR = os.path.join(OUTPUT_DIR, "processed")
+os.makedirs(PROCESSED_DIR, exist_ok=True)
+
+def processed_path(name):
+    return os.path.join(PROCESSED_DIR, f"{name}.jsonl")
+
+def already_processed(name):
+    p = processed_path(name)
+    if os.path.exists(p):
+        count = sum(1 for _ in open(p, encoding="utf-8"))
+        log.info(f"  [{name}] already processed — {count:,} examples. Skipping.")
+        return True
+    return False
+
+def normalize_answer(answer_str):
+    """Standardise answer strings across all sources."""
+    a = answer_str.strip()
+    # Strip trailing punctuation
+    a = a.rstrip(".")
+    # Remove currency symbols for numeric comparison later
+    a = a.replace("$","").replace(",","").strip()
+    return a
+
+def normalize_solution(solution_str):
+    """
+    Strip any leftover markdown and normalise whitespace.
+    Ensure the termination line is always present and clean.
+    """
+    # Remove markdown bold/italics
+    text = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", solution_str)
+    # Collapse 3+ blank lines to 2
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    # Ensure termination phrase exists at the end
+    if "therefore, the answer is" not in text.lower():
+        text = text.rstrip() + "\n\nTherefore, the answer is [see answer field]."
+    return text.strip()
+
+def verify_step_structure(solution_str):
+    """
+    For most sources: require at least 2 distinct Step N: lines.
+    """
+    step_lines = re.findall(r"Step\s+\d+:\s*(.+)", solution_str, re.IGNORECASE)
+    if len(step_lines) < 2:
+        return False
+    for i in range(1, len(step_lines)):
+        if step_lines[i].strip() == step_lines[i-1].strip():
+            return False
+    return True
+
+
+def verify_openhermes_structure(solution_str):
+    """
+    OpenHermes uses prose/numbered lists — not Step N: format.
+    Accept if it has enough reasoning signal and is not degenerate.
+    """
+    words = solution_str.split()
+    if len(words) < 30:
+        return False
+    # Not degenerate
+    if len(words) > 20:
+        ngrams = [tuple(words[i:i+5]) for i in range(len(words)-5)]
+        if ngrams and len(set(ngrams)) / len(ngrams) < 0.5:
+            return False
+    # Must have at least one reasoning marker
+    sol_lower = solution_str.lower()
+    has_reasoning = bool(re.search(
+        r"step\s+\d|first,|second,|third,|therefore|because|since|thus|hence|"
+        r"as a result|\d+\s*[\+\-\*\/=]\s*\d+",
+        sol_lower
+    ))
+    return has_reasoning
+
+
+def reformat_openhermes_to_steps(solution_str):
+    """
+    Force OpenHermes prose into Step N: format during pre-processing.
+    Splits by numbered list, existing steps, or paragraphs.
+    """
+    text = solution_str
+
+    # Remove the termination line before reformatting
+    term_match = re.search(r"\n\nTherefore, the answer is.+$", text)
+    answer_line = ""
+    if term_match:
+        answer_line = term_match.group(0)
+        text = text[:term_match.start()]
+
+    # Try numbered list
+    parts = re.split(r"\n\d+[\.\)]\s+", "\n" + text)
+    if len(parts) > 2:
+        steps = [p.strip() for p in parts if p.strip()]
+    else:
+        # Try paragraph split
+        parts = [p.strip() for p in re.split(r"\n\n+", text) if p.strip()]
+        if len(parts) >= 2:
+            steps = parts
+        else:
+            # Sentence split as last resort
+            steps = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+
+    # Filter trivially short steps
+    steps = [s for s in steps if len(s.split()) >= 5]
+
+    if len(steps) < 2:
+        return None  # Still can't make a valid chain — reject
+
+    # Rebuild in Step N: format
+    step_lines = "\n\n".join(f"Step {i+1}: {s}" for i, s in enumerate(steps[:8]))
+    return step_lines + answer_line
+
+
+def preprocess_dataset(name):
+    if already_processed(name): return
+    log.info(f"\n  [preprocess] {name}")
+    raw      = load_jsonl(raw_path(name))
+    cleaned  = []
+    rejected = 0
+
+    for ex in raw:
+        ex["answer"]   = normalize_answer(ex["answer"])
+        ex["solution"] = normalize_solution(ex["solution"])
+
+        # Source-specific step verification
+        if name == "openhermes":
+            if not verify_openhermes_structure(ex["solution"]):
+                rejected += 1
+                continue
+            # Reformat into Step N: structure
+            reformatted = reformat_openhermes_to_steps(ex["solution"])
+            if reformatted is None:
+                rejected += 1
+                continue
+            ex["solution"] = reformatted
+        else:
+            if not verify_step_structure(ex["solution"]):
+                rejected += 1
+                continue
+
+        if not is_quality(ex["problem"], ex["solution"], ex["answer"]):
+            rejected += 1
+            continue
+
+        cleaned.append(ex)
+
+    log.info(f"    Raw: {len(raw):,}  →  Clean: {len(cleaned):,}  "
+             f"(rejected {rejected:,} = {100*rejected/max(1,len(raw)):.1f}%)")
+    save_jsonl(cleaned, processed_path(name))
+    
+# ══════════════════════════════════════════════════════════════════════════════
+# PHASE 3 — MASTER DATASET: MERGE + DEDUP + SPLIT + SAVE
+# ══════════════════════════════════════════════════════════════════════════════
+
+def dedup(examples):
+    seen = set()
+    out  = []
+    for ex in examples:
+        key = hashlib.md5(ex["problem"].lower().strip().encode()).hexdigest()
+        if key not in seen:
+            seen.add(key)
+            out.append(ex)
+    return out
+
+def stratified_split(examples, val_ratio=VAL_RATIO):
+    by_cat = defaultdict(list)
+    for ex in examples:
+        by_cat[ex["category"]].append(ex)
+    train, val = [], []
+    for cat, items in by_cat.items():
+        random.shuffle(items)
+        n_val = max(1, int(len(items) * val_ratio))
+        val.extend(items[:n_val])
+        train.extend(items[n_val:])
+    random.shuffle(train)
+    random.shuffle(val)
+    return train, val
+
+def print_split_stats(examples, label):
+    by_cat  = defaultdict(int)
+    by_src  = defaultdict(int)
+    by_diff = defaultdict(int)
+    sol_lens = [len(ex["solution"].split()) for ex in examples]
+    for ex in examples:
+        by_cat[ex["category"]]    += 1
+        by_src[ex["source"]]      += 1
+        by_diff[ex["difficulty"]] += 1
+
+    log.info(f"\n  ── {label} ──")
+    log.info(f"  Total          : {len(examples):,}")
+    log.info(f"  Avg sol length : {sum(sol_lens)//len(sol_lens)} words")
+    log.info(f"\n  By category:")
+    for cat, n in sorted(by_cat.items(), key=lambda x: -x[1]):
+        pct = 100 * n / len(examples)
+        log.info(f"    {cat:<30} {n:>7,}  ({pct:.1f}%)")
+    log.info(f"\n  By source:")
+    for src, n in sorted(by_src.items(), key=lambda x: -x[1]):
+        log.info(f"    {src:<30} {n:>7,}")
+    log.info(f"\n  By difficulty:")
+    for diff, n in sorted(by_diff.items(), key=lambda x: -x[1]):
+        log.info(f"    {diff:<15} {n:>7,}")
+
+def build_master():
+    log.info(f"\n{'='*55}\n  PHASE 3 — Building Master Dataset\n{'='*55}")
+
+    master_train_path = os.path.join(MASTER_DIR, "sft_train.jsonl")
+    master_val_path   = os.path.join(MASTER_DIR, "sft_val.jsonl")
+    sample_path       = os.path.join(MASTER_DIR, "sft_sample_20.jsonl")
+
+    if os.path.exists(master_train_path) and os.path.exists(master_val_path):
+        t = sum(1 for _ in open(master_train_path))
+        v = sum(1 for _ in open(master_val_path))
+        log.info(f"  Master already exists — train={t:,}  val={v:,}. Skipping.")
+        return
+
+    # Load all processed files
+    all_examples = []
+    for name in DATASET_TARGETS:
+        p = processed_path(name)
+        if not os.path.exists(p):
+            log.warning(f"  WARNING: processed file missing for {name} — skipping")
+            continue
+        batch = load_jsonl(p)
+        log.info(f"  Loaded {name:<20} {len(batch):>7,} examples")
+        all_examples.extend(batch)
+
+    log.info(f"\n  Total before dedup : {len(all_examples):,}")
+    all_examples = dedup(all_examples)
+    log.info(f"  Total after dedup  : {len(all_examples):,}")
+
+    # Shuffle master before split
+    random.shuffle(all_examples)
+
+    # Stratified split
+    train, val = stratified_split(all_examples, VAL_RATIO)
+
+    # Stats
+    print_split_stats(train, "Train Set")
+    print_split_stats(val,   "Val Set")
+
+    # Save
+    save_jsonl(train, master_train_path)
+    save_jsonl(val,   master_val_path)
+
+    # 20-example manual inspection sample
+    sample = random.sample(train, min(20, len(train)))
+    save_jsonl(sample, sample_path)
+
+    log.info(f"\n  Master dataset complete.")
+    log.info(f"    Train : {len(train):,}  →  {master_train_path}")
+    log.info(f"    Val   : {len(val):,}    →  {master_val_path}")
+    log.info(f"    Sample: {sample_path}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN — Three explicit phases, clearly separated
+# ══════════════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    log.info("="*55)
+    log.info("  SFT Data Collection Pipeline")
+    log.info(f"  Started : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log.info("="*55)
+
+    # ── PHASE 1: Collect + write each dataset ─────────────────────────────────
+    log.info("\n" + "="*55)
+    log.info("  PHASE 1 — Dataset Collection")
+    log.info("="*55)
+
+    collect_gsm8k()
+    collect_metamath()
+    collect_orca_math()
+    collect_math_lighteval()
+    collect_logiqa()
+    collect_arc_challenge()
+    collect_arc_easy()
+    collect_sciq()
+    collect_openbookqa()
+    collect_openhermes()
+
+    # ── PHASE 2: Pre-process each raw file ────────────────────────────────────
+    log.info("\n" + "="*55)
+    log.info("  PHASE 2 — Pre-processing")
+    log.info("="*55)
+
+    for name in DATASET_TARGETS:
+        preprocess_dataset(name)
+
+    # ── PHASE 3: Merge + dedup + split + save master ──────────────────────────
+    build_master()
+
+    log.info(f"\n  Pipeline complete: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log.info(f"\n  Directory layout:")
+    log.info(f"    data/sft/raw/          — one raw .jsonl per dataset")
+    log.info(f"    data/sft/processed/    — cleaned, normalised per dataset")
+    log.info(f"    data/sft/master/       — sft_train.jsonl, sft_val.jsonl")
+    log.info("="*55)
+========================
+<<test.py>>
+# evaluate.py  —  SLM Base Model Evaluation
+# Training data: cosmopedia, dclm-edu, dolmino, openwebmath, pes2o, stackexchange
+# Evaluation: fully independent — zero overlap with any training/val split
+
+import os
+import gc
+import math
+import time
+import torch
+import numpy as np
+import torch.nn.functional as F
+from transformers import AutoTokenizer
+from model_architecture import CustomTransformer
+from config import SLMConfig
+
+cfg    = SLMConfig()
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+# =============================================================================
+# 1. MODEL LOADER
+# =============================================================================
+
+def load_model(ckpt_path="checkpoints/best_model.pt"):
+    model = CustomTransformer(cfg).to(device).to(torch.bfloat16)
+    print(f"  Loading : {ckpt_path}")
+    ckpt  = torch.load(ckpt_path, map_location=device, weights_only=False)
+    state = ckpt.get("model", ckpt)
+    # Strip torch.compile prefix
+    state = {(k[len("_orig_mod."):] if k.startswith("_orig_mod.") else k): v
+             for k, v in state.items()}
+    model.load_state_dict(state)
+    model.eval()
+    total = sum(p.numel() for p in model.parameters())
+    print(f"  Params  : {total/1e6:.1f}M")
+    if "val_loss" in ckpt:
+        print(f"  Best val_loss : {ckpt['val_loss']:.4f}  (ppl {math.exp(ckpt['val_loss']):.2f})")
+    return model
+
+
+# =============================================================================
+# 2. CORE PRIMITIVES
+# =============================================================================
+
+@torch.no_grad()
+def sequence_log_prob(model, tokenizer, text):
+    """
+    Returns the mean per-token log-probability of `text`.
+    Lower (more negative) = model finds it less likely.
+    Used for multiple-choice scoring without any external judge.
+    """
+    ids = tokenizer.encode(text, return_tensors="pt").to(device)
+    if ids.shape[1] < 2:
+        return float("-inf")
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        logits = model(ids)
+    log_probs = F.log_softmax(logits, dim=-1)
+    # Score each token against its successor
+    token_scores = log_probs[0, :-1, :].gather(
+        1, ids[0, 1:].unsqueeze(-1)
+    ).squeeze(-1)
+    return token_scores.mean().item()
+
+
+@torch.no_grad()
+def continuation_log_prob(model, tokenizer, prefix, continuation):
+    """
+    Score only the `continuation` tokens, conditioned on `prefix`.
+    Cleaner for multiple-choice: prefix = question, continuation = each answer option.
+    """
+    prefix_ids      = tokenizer.encode(prefix,       add_special_tokens=True)
+    continuation_ids = tokenizer.encode(continuation, add_special_tokens=False)
+    full_ids = torch.tensor([prefix_ids + continuation_ids], device=device)
+
+    if full_ids.shape[1] > cfg.max_seq_len:
+        full_ids = full_ids[:, -cfg.max_seq_len:]
+
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        logits = model(full_ids)
+
+    log_probs = F.log_softmax(logits, dim=-1)
+    cont_start = len(prefix_ids) - 1   # -1 because logits are shifted
+    cont_len   = len(continuation_ids)
+
+    if cont_start + cont_len > log_probs.shape[1]:
+        return float("-inf")
+
+    scores = log_probs[0, cont_start:cont_start + cont_len, :].gather(
+        1, full_ids[0, len(prefix_ids):len(prefix_ids) + cont_len].unsqueeze(-1)
+    ).squeeze(-1)
+    return scores.mean().item()
+
+
+def mc_predict(model, tokenizer, question, choices):
+    """
+    Multiple-choice via log-prob scoring.
+    Returns (predicted_index, list_of_scores).
+    """
+    scores = [continuation_log_prob(model, tokenizer, question, c) for c in choices]
+    return int(np.argmax(scores)), scores
+
+
+@torch.no_grad()
+def generate(model, tokenizer, prompt,
+             max_new_tokens=256, temperature=0.7, top_k=50, top_p=0.9):
+    ids  = tokenizer.encode(prompt, return_tensors="pt").to(device)
+    gen  = ids.clone()
+    for _ in range(max_new_tokens):
+        ctx = gen[:, -cfg.max_seq_len:]
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            logits = model(ctx)
+        logits = logits[:, -1, :] / temperature
+        if top_k > 0:
+            v, _ = torch.topk(logits, top_k)
+            logits[logits < v[:, -1:]] = float("-inf")
+        if top_p < 1.0:
+            sl, si = torch.sort(logits, descending=True)
+            cp = torch.cumsum(F.softmax(sl, dim=-1), dim=-1)
+            sl[cp - F.softmax(sl, dim=-1) > top_p] = float("-inf")
+            logits = sl.scatter(1, si, sl)
+        probs    = F.softmax(logits, dim=-1)
+        next_tok = torch.multinomial(probs, 1)
+        gen      = torch.cat([gen, next_tok], dim=1)
+        if next_tok.item() == tokenizer.eos_token_id:
+            break
+    return tokenizer.decode(gen[0, ids.shape[1]:].tolist(), skip_special_tokens=True)
+
+
+@torch.no_grad()
+def generate_greedy(model, tokenizer, prompt, max_new_tokens=300):
+    ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
+    gen = ids.clone()
+    for _ in range(max_new_tokens):
+        ctx = gen[:, -cfg.max_seq_len:]
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            logits = model(ctx)
+        next_tok = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        gen = torch.cat([gen, next_tok], dim=1)
+        if next_tok.item() == tokenizer.eos_token_id:
+            break
+    return tokenizer.decode(gen[0, ids.shape[1]:].tolist(), skip_special_tokens=True)
+
+
+# =============================================================================
+# 3. GENERATION QUALITY — DOMAIN-APPROPRIATE
+#    Prompts match actual training distribution:
+#    educational explanations, scientific text, Q&A, math exposition
+# =============================================================================
+
+GENERATION_PROMPTS = [
+    # Educational / cosmopedia style
+    {
+        "label": "educational_explanation",
+        "prompt": "Explain why the sky is blue. Include the relevant physics concept.",
+        "keywords": ["scatter", "rayleigh", "wavelength", "light", "blue"]
+    },
+    {
+        "label": "concept_explanation",
+        "prompt": "What is the difference between supervised and unsupervised learning in machine learning?",
+        "keywords": ["label", "data", "cluster", "pattern", "train"]
+    },
+    # Scientific / pes2o style
+    {
+        "label": "scientific_prose",
+        "prompt": "The process of photosynthesis converts light energy into chemical energy. Describe the two main stages and what each produces.",
+        "keywords": ["light", "dark", "atp", "glucose", "chlorophyll", "calvin"]
+    },
+    # StackExchange Q&A style
+    {
+        "label": "technical_qa",
+        "prompt": "Q: What is the difference between a stack and a queue data structure?\nA:",
+        "keywords": ["lifo", "fifo", "last", "first", "push", "pop", "enqueue"]
+    },
+    {
+        "label": "programming_qa",
+        "prompt": "Q: Why does floating point arithmetic sometimes give unexpected results in programming?\nA:",
+        "keywords": ["binary", "precision", "float", "represent", "round"]
+    },
+    # OpenWebMath style
+    {
+        "label": "math_exposition",
+        "prompt": "Explain the intuition behind the Pythagorean theorem and why a² + b² = c² holds for right triangles.",
+        "keywords": ["right", "hypotenuse", "square", "area", "angle", "proof"]
+    },
+    # Dolmino / general web
+    {
+        "label": "analytical_writing",
+        "prompt": "What are the main causes of inflation and how does raising interest rates help control it?",
+        "keywords": ["money", "supply", "demand", "price", "rate", "spend", "borrow"]
+    },
+]
+
+def keyword_coverage(text, keywords):
+    t = text.lower()
+    hits = sum(1 for k in keywords if k in t)
+    return hits / len(keywords)
+
+def repetition_rate(text, n=4):
+    tokens = text.split()
+    if len(tokens) < n:
+        return 0.0
+    ngrams = [tuple(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
+    return 1 - len(set(ngrams)) / len(ngrams)
+
+def type_token_ratio(text):
+    tokens = text.lower().split()
+    return len(set(tokens)) / len(tokens) if tokens else 0.0
+
+
+def evaluate_generation_quality(model, tokenizer):
+    print("\n" + "="*65)
+    print("  SECTION 1 — Generation Quality (Domain-Appropriate Prompts)")
+    print("="*65)
+
+    results = []
+    for item in GENERATION_PROMPTS:
+        out    = generate(model, tokenizer, item["prompt"],
+                          max_new_tokens=200, temperature=0.7)
+        rep    = repetition_rate(out, n=4)
+        ttr    = type_token_ratio(out)
+        kw_cov = keyword_coverage(out, item["keywords"])
+        results.append({
+            "label"   : item["label"],
+            "rep"     : rep,
+            "ttr"     : ttr,
+            "kw_cov"  : kw_cov,
+            "words"   : len(out.split()),
+            "output"  : out,
+        })
+        print(f"\n  [{item['label']}]")
+        print(f"  PROMPT : {item['prompt'][:90]}")
+        print(f"  OUTPUT : {out[:400]}")
+        print(f"  rep={rep:.3f}  ttr={ttr:.3f}  kw_coverage={kw_cov:.0%}  words={len(out.split())}")
+
+    print("\n  --- Aggregate ---")
+    print(f"  Avg repetition   : {np.mean([r['rep'] for r in results]):.3f}  (target <0.05)")
+    print(f"  Avg TTR          : {np.mean([r['ttr'] for r in results]):.3f}  (target >0.55)")
+    print(f"  Avg kw_coverage  : {np.mean([r['kw_cov'] for r in results]):.0%}  (target >50%)")
+    return results
+
+
+# =============================================================================
+# 4. MULTIPLE CHOICE — LOG-PROB SCORING
+#    No external judge. Model scores each option directly.
+#    Covers the reasoning categories that matter for a reasoning model.
+# =============================================================================
+
+MC_BENCHMARKS = {
+
+    "elementary_math": [
+        {
+            "q": "If a train travels 60 miles per hour for 2.5 hours, how far does it travel?\n",
+            "choices": ["100 miles", "120 miles", "150 miles", "180 miles"],
+            "answer": 2,  # 150
+        },
+        {
+            "q": "What is 15% of 240?\n",
+            "choices": ["30", "36", "40", "24"],
+            "answer": 1,  # 36
+        },
+        {
+            "q": "A rectangle has length 8 and width 5. What is its area?\n",
+            "choices": ["26", "13", "40", "45"],
+            "answer": 2,  # 40
+        },
+        {
+            "q": "If 3x + 7 = 22, what is x?\n",
+            "choices": ["3", "4", "5", "6"],
+            "answer": 2,  # 5
+        },
+        {
+            "q": "What is the square root of 144?\n",
+            "choices": ["11", "12", "13", "14"],
+            "answer": 1,  # 12
+        },
+    ],
+
+    "algebra_and_reasoning": [
+        {
+            "q": "If f(x) = 2x² - 3x + 1, what is f(2)?\n",
+            "choices": ["1", "3", "5", "7"],
+            "answer": 1,  # 3
+        },
+        {
+            "q": "A car depreciates 20% per year. If it costs $10,000 today, what is it worth after 2 years?\n",
+            "choices": ["$6,000", "$6,400", "$7,600", "$8,000"],
+            "answer": 1,  # 6400
+        },
+        {
+            "q": "Two numbers sum to 50. One is twice the other. What is the smaller number?\n",
+            "choices": ["10", "15", "16.7", "25"],
+            "answer": 2,  # ~16.67
+        },
+        {
+            "q": "If log₂(x) = 5, what is x?\n",
+            "choices": ["10", "25", "32", "64"],
+            "answer": 2,  # 32
+        },
+    ],
+
+    "logical_deduction": [
+        {
+            "q": "All mammals are warm-blooded. Dolphins are mammals. Which must be true?\n",
+            "choices": [
+                "Dolphins are fish",
+                "Dolphins are warm-blooded",
+                "All warm-blooded animals are mammals",
+                "Dolphins breathe underwater",
+            ],
+            "answer": 1,
+        },
+        {
+            "q": "If it rains, the match is cancelled. The match was not cancelled. What can we conclude?\n",
+            "choices": [
+                "It rained",
+                "It did not rain",
+                "The match was played indoors",
+                "Nothing can be concluded",
+            ],
+            "answer": 1,  # contrapositive
+        },
+        {
+            "q": "Some A are B. All B are C. Which statement must be true?\n",
+            "choices": [
+                "All A are C",
+                "Some A are C",
+                "No A are C",
+                "All C are A",
+            ],
+            "answer": 1,
+        },
+        {
+            "q": "In a race, Alice finished before Bob. Bob finished before Carol. Who finished last?\n",
+            "choices": ["Alice", "Bob", "Carol", "Cannot be determined"],
+            "answer": 2,
+        },
+        {
+            "q": "If all doctors are scientists and some scientists are writers, which is definitely true?\n",
+            "choices": [
+                "All doctors are writers",
+                "Some doctors are writers",
+                "All scientists are doctors",
+                "None of the above must be true",
+            ],
+            "answer": 3,
+        },
+    ],
+
+    "scientific_reasoning": [
+        {
+            "q": "A scientist doubles the concentration of a reactant. The reaction rate quadruples. What is the order of the reaction with respect to that reactant?\n",
+            "choices": ["Zero order", "First order", "Second order", "Third order"],
+            "answer": 2,
+        },
+        {
+            "q": "An object in space continues moving at constant velocity. Which law explains this?\n",
+            "choices": [
+                "Newton's Second Law",
+                "Newton's First Law",
+                "Newton's Third Law",
+                "Law of Gravitation",
+            ],
+            "answer": 1,
+        },
+        {
+            "q": "Which process converts glucose into pyruvate without using oxygen?\n",
+            "choices": ["Krebs cycle", "Oxidative phosphorylation", "Glycolysis", "Photosynthesis"],
+            "answer": 2,
+        },
+        {
+            "q": "The half-life of a radioactive substance is 10 years. After 30 years, what fraction remains?\n",
+            "choices": ["1/2", "1/4", "1/8", "1/16"],
+            "answer": 2,  # 1/8
+        },
+        {
+            "q": "What property of water makes it an excellent solvent for ionic compounds?\n",
+            "choices": [
+                "High boiling point",
+                "Polar molecule with partial charges",
+                "Low viscosity",
+                "High surface tension",
+            ],
+            "answer": 1,
+        },
+    ],
+
+    "computer_science": [
+        {
+            "q": "What is the time complexity of binary search on a sorted array of n elements?\n",
+            "choices": ["O(1)", "O(log n)", "O(n)", "O(n log n)"],
+            "answer": 1,
+        },
+        {
+            "q": "Which data structure uses LIFO (Last In First Out) ordering?\n",
+            "choices": ["Queue", "Stack", "Heap", "Linked List"],
+            "answer": 1,
+        },
+        {
+            "q": "In TCP/IP, which layer is responsible for end-to-end communication and error checking?\n",
+            "choices": ["Network layer", "Data link layer", "Transport layer", "Application layer"],
+            "answer": 2,
+        },
+        {
+            "q": "What does SQL SELECT DISTINCT do?\n",
+            "choices": [
+                "Sorts the results",
+                "Removes duplicate rows from results",
+                "Filters rows by condition",
+                "Joins two tables",
+            ],
+            "answer": 1,
+        },
+        {
+            "q": "Which sorting algorithm has the best average-case time complexity?\n",
+            "choices": ["Bubble sort O(n²)", "Merge sort O(n log n)", "Insertion sort O(n²)", "Selection sort O(n²)"],
+            "answer": 1,
+        },
+    ],
+
+    "multi_step_word_problems": [
+        {
+            "q": (
+                "A store sells apples for $0.50 each and oranges for $0.75 each. "
+                "Maria buys 4 apples and 3 oranges. She pays with a $5 bill. "
+                "How much change does she receive?\n"
+            ),
+            "choices": ["$0.25", "$0.75", "$1.25", "$1.75"],
+            "answer": 1,  # 5 - (2 + 2.25) = 0.75
+        },
+        {
+            "q": (
+                "A tank fills in 6 hours when pipe A is open. "
+                "Pipe B alone fills it in 12 hours. "
+                "How many hours does it take if both pipes are open?\n"
+            ),
+            "choices": ["3 hours", "4 hours", "5 hours", "6 hours"],
+            "answer": 1,  # 4
+        },
+        {
+            "q": (
+                "A recipe for 4 people requires 2 cups of flour. "
+                "You want to make it for 10 people. "
+                "How many cups of flour do you need?\n"
+            ),
+            "choices": ["4 cups", "5 cups", "6 cups", "8 cups"],
+            "answer": 1,  # 5
+        },
+        {
+            "q": (
+                "A car gets 35 miles per gallon. Gas costs $3.50 per gallon. "
+                "How much does a 350-mile trip cost in fuel?\n"
+            ),
+            "choices": ["$25", "$30", "$35", "$40"],
+            "answer": 2,  # 35
+        },
+    ],
+
+    "reading_comprehension_and_inference": [
+        {
+            "q": (
+                "Passage: 'The vaccine reduced infection rates by 85% in clinical trials. "
+                "However, it required cold storage at -70°C, making distribution in rural areas challenging.'\n"
+                "What is the main trade-off described?\n"
+            ),
+            "choices": [
+                "High cost vs. high effectiveness",
+                "High effectiveness vs. difficult distribution",
+                "Fast production vs. slow approval",
+                "Strong immunity vs. side effects",
+            ],
+            "answer": 1,
+        },
+        {
+            "q": (
+                "Passage: 'Company X's revenue grew 40% last year while expenses grew 60%. "
+                "The CEO announced record revenues at the shareholder meeting.'\n"
+                "What is misleading about the CEO's statement?\n"
+            ),
+            "choices": [
+                "Revenue did not actually grow",
+                "Revenue grew but profitability likely fell",
+                "Expenses did not grow",
+                "Nothing is misleading",
+            ],
+            "answer": 1,
+        },
+        {
+            "q": (
+                "Passage: 'Nations that adopted coal as their primary energy source in the 1800s "
+                "experienced rapid industrialization but also significant public health crises.'\n"
+                "What does this passage most directly support?\n"
+            ),
+            "choices": [
+                "Coal is always harmful",
+                "Industrialization requires coal",
+                "Rapid development can come with health costs",
+                "Public health improved during industrialization",
+            ],
+            "answer": 2,
+        },
+    ],
+}
+
+
+def evaluate_multiple_choice(model, tokenizer):
+    print("\n" + "="*65)
+    print("  SECTION 2 — Multiple Choice (Log-Prob Scoring, No External Judge)")
+    print("="*65)
+
+    category_results = {}
+    grand_correct = 0
+    grand_total   = 0
+
+    for category, items in MC_BENCHMARKS.items():
+        correct = 0
+        print(f"\n  ── {category.upper().replace('_', ' ')} ──")
+        for item in items:
+            pred, scores = mc_predict(model, tokenizer, item["q"], item["choices"])
+            is_correct   = (pred == item["answer"])
+            correct     += int(is_correct)
+            mark         = "✓" if is_correct else "✗"
+            print(f"  {mark}  Q: {item['q'].strip()[:80]}")
+            print(f"      Predicted: [{pred}] {item['choices'][pred]}")
+            if not is_correct:
+                print(f"      Correct  : [{item['answer']}] {item['choices'][item['answer']]}")
+            score_str = "  ".join([f"[{i}]{s:.2f}" for i, s in enumerate(scores)])
+            print(f"      Scores   : {score_str}")
+
+        acc = correct / len(items)
+        category_results[category] = {"correct": correct, "total": len(items), "acc": acc}
+        print(f"  Accuracy: {correct}/{len(items)} = {acc:.0%}")
+        grand_correct += correct
+        grand_total   += len(items)
+
+    print(f"\n  {'='*40}")
+    print(f"  OVERALL MC ACCURACY : {grand_correct}/{grand_total} = {grand_correct/grand_total:.0%}")
+    return category_results, grand_correct / grand_total
+
+
+# =============================================================================
+# 5. CHAIN-OF-THOUGHT EVALUATION
+#    Tests whether the model can produce faithful, advancing reasoning traces.
+#    Calibrated to the actual training data register (academic/technical).
+# =============================================================================
+
+COT_PROBLEMS = [
+    {
+        "label": "arithmetic_word_problem",
+        "prompt": (
+            "Q: A factory produces 240 widgets per day. It operates 6 days a week. "
+            "How many widgets does it produce in 4 weeks?\n"
+            "A: Let's think step by step.\n"
+        ),
+        "expected_answer": "5760",
+        "expected_keywords": ["240", "6", "4", "week", "1440", "5760"],
+    },
+    {
+        "label": "percentage_reasoning",
+        "prompt": (
+            "Q: A jacket originally costs $80. It is on sale for 25% off. "
+            "After the discount, a 10% tax is applied. What is the final price?\n"
+            "A: Let's think step by step.\n"
+        ),
+        "expected_answer": "66",
+        "expected_keywords": ["80", "25", "60", "10", "66"],
+    },
+    {
+        "label": "logical_chain",
+        "prompt": (
+            "Q: All professors at this university have a PhD. "
+            "Dr. Smith is a professor here. "
+            "Does Dr. Smith have a PhD? Explain your reasoning.\n"
+            "A: Let's think step by step.\n"
+        ),
+        "expected_answer": "yes",
+        "expected_keywords": ["yes", "professor", "phd", "therefore", "smith"],
+    },
+    {
+        "label": "rate_problem",
+        "prompt": (
+            "Q: Alice can paint a fence in 3 hours. Bob can paint the same fence in 6 hours. "
+            "If they work together, how long does it take?\n"
+            "A: Let's think step by step.\n"
+        ),
+        "expected_answer": "2 hours",
+        "expected_keywords": ["1/3", "1/6", "1/2", "2", "rate", "together"],
+    },
+    {
+        "label": "multi_constraint_reasoning",
+        "prompt": (
+            "Q: A container holds 50 liters. It is currently 40% full. "
+            "How many liters must be added to make it 90% full?\n"
+            "A: Let's think step by step.\n"
+        ),
+        "expected_answer": "25",
+        "expected_keywords": ["50", "40", "20", "90", "45", "25"],
+    },
+    {
+        "label": "comparison_reasoning",
+        "prompt": (
+            "Q: Plan A costs $200 upfront and $10 per month. "
+            "Plan B costs $0 upfront and $25 per month. "
+            "After how many months is Plan A cheaper?\n"
+            "A: Let's think step by step.\n"
+        ),
+        "expected_answer": "14",
+        "expected_keywords": ["200", "10", "25", "15", "13", "14"],
+    },
+    {
+        "label": "scientific_reasoning",
+        "prompt": (
+            "Q: A sample of a radioactive element has a half-life of 5 years. "
+            "You start with 800 grams. How much remains after 15 years?\n"
+            "A: Let's think step by step.\n"
+        ),
+        "expected_answer": "100",
+        "expected_keywords": ["800", "400", "200", "100", "half", "5", "15"],
+    },
+    {
+        "label": "code_logic_trace",
+        "prompt": (
+            "Q: Consider this pseudocode:\n"
+            "  x = 10\n"
+            "  for i in range(3):\n"
+            "      x = x * 2 - 1\n"
+            "What is the value of x after the loop?\n"
+            "A: Let's think step by step.\n"
+        ),
+        "expected_answer": "69",
+        "expected_keywords": ["10", "19", "37", "73", "i=0", "i=1", "i=2"],
+    },
+]
+
+
+def analyze_cot_output(output, keywords):
+    """
+    Analyze a CoT output for quality signals.
+    Returns a dict of metrics.
+    """
+    lines    = [l.strip() for l in output.strip().split("\n") if l.strip()]
+    words    = output.split()
+
+    # Step structure: does it have advancing steps?
+    step_lines   = [l for l in lines if l.lower().startswith("step")]
+    has_steps    = len(step_lines) >= 2
+
+    # Answer line: does it terminate with an answer?
+    has_answer   = any(
+        l.lower().startswith(("answer", "therefore", "so the answer", "final", "result", "thus"))
+        for l in lines[-3:]  # check last 3 lines
+    )
+
+    # Keyword coverage
+    text_lower   = output.lower()
+    kw_hits      = sum(1 for k in keywords if k.lower() in text_lower)
+    kw_coverage  = kw_hits / len(keywords) if keywords else 0
+
+    # Repetition
+    rep          = repetition_rate(output, n=4)
+
+    # Step advancement: are steps different from each other?
+    step_unique  = len(set(step_lines)) / len(step_lines) if step_lines else 0
+
+    # Degenerate patterns
+    is_degenerate = rep > 0.5 or (len(words) > 50 and len(set(words)) < 10)
+
+    # Overall coherence score (0-4 for CoT — we need finer granularity here)
+    score = 0
+    if not is_degenerate:                 score += 1
+    if kw_coverage > 0.3:                score += 1
+    if has_steps and step_unique > 0.5:  score += 1
+    if has_answer:                       score += 1
+
+    return {
+        "score"       : score,           # 0-4
+        "has_steps"   : has_steps,
+        "has_answer"  : has_answer,
+        "kw_coverage" : kw_coverage,
+        "rep"         : rep,
+        "is_degenerate": is_degenerate,
+        "n_steps"     : len(step_lines),
+        "step_unique" : step_unique,
+    }
+
+
+def evaluate_chain_of_thought(model, tokenizer):
+    print("\n" + "="*65)
+    print("  SECTION 3 — Chain-of-Thought Reasoning")
+    print("="*65)
+
+    all_results = []
+    for item in COT_PROBLEMS:
+        print(f"\n  [{item['label']}]")
+        print(f"  PROMPT : {item['prompt'].strip()}")
+
+        # Sampling run
+        out_sample = generate(model, tokenizer, item["prompt"],
+                              max_new_tokens=300, temperature=0.6, top_k=40)
+        # Greedy run — shows model's highest-confidence reasoning path
+        out_greedy = generate_greedy(model, tokenizer, item["prompt"],
+                                     max_new_tokens=300)
+
+        metrics_s = analyze_cot_output(out_sample, item["expected_keywords"])
+        metrics_g = analyze_cot_output(out_greedy, item["expected_keywords"])
+
+        ans_in_sample = item["expected_answer"].lower() in out_sample.lower()
+        ans_in_greedy = item["expected_answer"].lower() in out_greedy.lower()
+
+        print(f"\n  [Sampling output]")
+        print(f"  {out_sample.strip()[:500]}")
+        print(f"  score={metrics_s['score']}/4  steps={metrics_s['n_steps']}  "
+              f"kw={metrics_s['kw_coverage']:.0%}  "
+              f"has_answer={metrics_s['has_answer']}  "
+              f"degenerate={metrics_s['is_degenerate']}  "
+              f"correct_ans={'✓' if ans_in_sample else '✗'}")
+
+        print(f"\n  [Greedy output]")
+        print(f"  {out_greedy.strip()[:500]}")
+        print(f"  score={metrics_g['score']}/4  steps={metrics_g['n_steps']}  "
+              f"kw={metrics_g['kw_coverage']:.0%}  "
+              f"has_answer={metrics_g['has_answer']}  "
+              f"degenerate={metrics_g['is_degenerate']}  "
+              f"correct_ans={'✓' if ans_in_greedy else '✗'}")
+
+        all_results.append({
+            "label"          : item["label"],
+            "sample_score"   : metrics_s["score"],
+            "greedy_score"   : metrics_g["score"],
+            "ans_in_sample"  : ans_in_sample,
+            "ans_in_greedy"  : ans_in_greedy,
+        })
+
+    print("\n  --- CoT Summary ---")
+    print(f"  {'Problem':<30} {'Sample':>7} {'Greedy':>7} {'Ans(s)':>7} {'Ans(g)':>7}")
+    print(f"  {'-'*58}")
+    for r in all_results:
+        print(f"  {r['label']:<30} {r['sample_score']:>5}/4  {r['greedy_score']:>5}/4  "
+              f"{'✓' if r['ans_in_sample'] else '✗':>7}  {'✓' if r['ans_in_greedy'] else '✗':>7}")
+
+    avg_sample = np.mean([r["sample_score"]  for r in all_results])
+    avg_greedy = np.mean([r["greedy_score"]  for r in all_results])
+    ans_sample = np.mean([r["ans_in_sample"] for r in all_results])
+    ans_greedy = np.mean([r["ans_in_greedy"] for r in all_results])
+
+    print(f"\n  Avg CoT score (sampling): {avg_sample:.2f}/4")
+    print(f"  Avg CoT score (greedy)  : {avg_greedy:.2f}/4")
+    print(f"  Answer accuracy (sample): {ans_sample:.0%}")
+    print(f"  Answer accuracy (greedy): {ans_greedy:.0%}")
+    return all_results
+
+
+# =============================================================================
+# 6. KNOWLEDGE PROBE — FACTUAL RECALL FROM TRAINING DOMAINS
+#    Tests whether pretraining knowledge is encoded and retrievable.
+# =============================================================================
+
+KNOWLEDGE_PROBES = {
+    "mathematics": [
+        ("The derivative of sin(x) is", "cos(x)"),
+        ("The integral of 1/x dx is", "ln"),
+        ("Euler's number e is approximately", "2.71"),
+        ("The sum of angles in a triangle is", "180"),
+        ("A prime number has exactly", "two"),  # two factors
+    ],
+    "computer_science": [
+        ("In Big-O notation, O(1) means", "constant"),
+        ("A binary tree node has at most", "two"),
+        ("HTTP status code 404 means", "found"),   # not found
+        ("RAM stands for Random Access", "Memory"),
+        ("Python is an interpreted", "language"),
+    ],
+    "science": [
+        ("The speed of light in vacuum is approximately", "3"),  # 3×10^8
+        ("DNA stands for Deoxyribonucleic", "Acid"),
+        ("The powerhouse of the cell is the", "mitochondria"),
+        ("Newton's second law: F equals", "ma"),
+        ("The chemical formula for water is", "H2O"),
+    ],
+    "general_academic": [
+        ("The French Revolution began in", "1789"),
+        ("The theory of relativity was developed by", "Einstein"),
+        ("Supply and demand is a fundamental concept in", "economics"),
+        ("Photons are particles of", "light"),
+        ("The Pythagorean theorem applies to", "right"),  # right triangles
+    ],
+}
+
+def evaluate_knowledge(model, tokenizer):
+    print("\n" + "="*65)
+    print("  SECTION 4 — Knowledge Recall (Domain Coverage Check)")
+    print("="*65)
+
+    category_results = {}
+    for category, probes in KNOWLEDGE_PROBES.items():
+        correct = 0
+        print(f"\n  ── {category.upper()} ──")
+        for prefix, expected in probes:
+            # Score completion vs a wrong alternative using log-prob
+            out = generate_greedy(model, tokenizer, prefix, max_new_tokens=20)
+            hit = expected.lower() in (prefix + out).lower()
+            correct += int(hit)
+            mark     = "✓" if hit else "✗"
+            print(f"  {mark}  {prefix[:60]}")
+            print(f"       Generated: {out.strip()[:80]}")
+        acc = correct / len(probes)
+        category_results[category] = acc
+        print(f"  Accuracy: {correct}/{len(probes)} = {acc:.0%}")
+
+    overall = np.mean(list(category_results.values()))
+    print(f"\n  Overall knowledge recall: {overall:.0%}")
+    return category_results
+
+
+# =============================================================================
+# 7. DEGENERATION STRESS TEST
+#    Aggressively tests where the model breaks down.
+#    Critical for understanding SFT starting point.
+# =============================================================================
+
+STRESS_PROMPTS = [
+    # Long-context coherence
+    {
+        "label": "long_form_coherence",
+        "prompt": "Write a detailed explanation of how gradient descent works in machine learning, covering the intuition, the math, and common variants like SGD, Adam, and RMSProp.",
+        "max_tokens": 400,
+    },
+    # Abstract reasoning
+    {
+        "label": "abstract_reasoning",
+        "prompt": "Explain the Monty Hall problem and why switching doors gives a 2/3 probability of winning.",
+        "max_tokens": 300,
+    },
+    # Self-correction ability
+    {
+        "label": "error_correction",
+        "prompt": "The following solution has an error. Find and fix it.\nProblem: Find the derivative of f(x) = x³ + 2x.\nSolution: f'(x) = x² + 2\nWhat is wrong and what is the correct answer?",
+        "max_tokens": 150,
+    },
+    # Instruction following
+    {
+        "label": "structured_output",
+        "prompt": "List exactly 3 differences between supervised and reinforcement learning. Format your answer as a numbered list.",
+        "max_tokens": 200,
+    },
+    # Adversarial repetition trigger
+    {
+        "label": "repetition_resistance",
+        "prompt": "The number 42 is interesting because",
+        "max_tokens": 200,
+    },
+]
+
+def evaluate_stress(model, tokenizer):
+    print("\n" + "="*65)
+    print("  SECTION 5 — Degeneration Stress Tests")
+    print("="*65)
+
+    results = []
+    for item in STRESS_PROMPTS:
+        out = generate(model, tokenizer, item["prompt"],
+                       max_new_tokens=item["max_tokens"], temperature=0.7)
+        rep  = repetition_rate(out, n=4)
+        ttr  = type_token_ratio(out)
+        degen = rep > 0.3
+        results.append({"label": item["label"], "rep": rep, "ttr": ttr, "degen": degen})
+        print(f"\n  [{item['label']}]  {'⚠ DEGENERATE' if degen else '✓ OK'}")
+        print(f"  PROMPT : {item['prompt'][:90]}")
+        print(f"  OUTPUT : {out.strip()[:400]}")
+        print(f"  rep={rep:.3f}  ttr={ttr:.3f}")
+
+    degen_count = sum(r["degen"] for r in results)
+    print(f"\n  Degeneration failures: {degen_count}/{len(results)}")
+    return results
+
+
+# =============================================================================
+# 8. FINAL REPORT
+# =============================================================================
+
+def print_final_report(mc_results, mc_overall, cot_results, knowledge_results):
+    print("\n" + "="*65)
+    print("  FINAL EVALUATION REPORT")
+    print("="*65)
+
+    print(f"\n  ── Multiple Choice Accuracy ──")
+    for cat, res in mc_results.items():
+        bar = "█" * int(res["acc"] * 20) + "░" * (20 - int(res["acc"] * 20))
+        print(f"  {cat:<35} {bar}  {res['acc']:.0%}")
+    print(f"  {'OVERALL':<35} {mc_overall:.0%}")
+
+    avg_cot_sample = np.mean([r["sample_score"] for r in cot_results])
+    avg_cot_greedy = np.mean([r["greedy_score"] for r in cot_results])
+    ans_acc_sample = np.mean([r["ans_in_sample"] for r in cot_results])
+    ans_acc_greedy = np.mean([r["ans_in_greedy"] for r in cot_results])
+    print(f"\n  ── Chain-of-Thought ──")
+    print(f"  CoT quality  (sampling) : {avg_cot_sample:.2f}/4")
+    print(f"  CoT quality  (greedy)   : {avg_cot_greedy:.2f}/4")
+    print(f"  Answer accuracy (sample): {ans_acc_sample:.0%}")
+    print(f"  Answer accuracy (greedy): {ans_acc_greedy:.0%}")
+
+    print(f"\n  ── Knowledge Recall ──")
+    for cat, acc in knowledge_results.items():
+        print(f"  {cat:<35} {acc:.0%}")
+
+    print(f"\n  ── Reasoning Model Readiness ──")
+
+    # Readiness verdict
+    if mc_overall >= 0.65 and avg_cot_sample >= 2.5:
+        print("  ★ Strong base — proceed directly to CoT SFT + DPO")
+    elif mc_overall >= 0.45 and avg_cot_sample >= 1.5:
+        print("  ~ Moderate base — CoT SFT required before DPO")
+    else:
+        print("  ✗ Weak reasoning base — intensive SFT on reasoning traces required")
+
+    print("\n  ── SFT Priority Order (based on results) ──")
+    weak_mc = sorted(mc_results.items(), key=lambda x: x[1]["acc"])
+    for cat, res in weak_mc[:3]:
+        print(f"  • {cat}  ({res['acc']:.0%} accuracy)")
+
+    print("\n  ── What to watch in SFT ──")
+    print("  1. CoT score should improve from current baseline")
+    print("  2. Answer accuracy (greedy) is the primary north-star metric")
+    print("  3. MC accuracy on math + logic should exceed 70% before DPO")
+    print("  4. Degeneration rate should drop to 0/5 on stress tests")
+    print("="*65 + "\n")
+
+# =============================================================================
+# SECTION A — DOMAIN PERPLEXITY ON CURATED PASSAGES
+# Ground truth of what the model actually learned domain by domain.
+# Passages are embedded here — zero dependency on any .bin file.
+# =============================================================================
+
+DOMAIN_PASSAGES = {
+
+    "openwebmath": [
+        # Pure mathematical prose — mirrors openwebmath training data
+        """The Fundamental Theorem of Calculus establishes the relationship between 
+differentiation and integration. If f is continuous on [a, b] and F is an 
+antiderivative of f, then the integral from a to b of f(x)dx equals F(b) minus F(a). 
+This theorem has two parts: the first guarantees the existence of antiderivatives for 
+continuous functions, while the second provides a practical method for evaluating 
+definite integrals without computing Riemann sums directly.""",
+
+        """A prime number is a natural number greater than 1 that has no positive 
+divisors other than 1 and itself. The prime factorization theorem, also known as the 
+Fundamental Theorem of Arithmetic, states that every integer greater than 1 can be 
+represented uniquely as a product of prime numbers, up to the order of the factors. 
+For example, 360 equals 2 raised to the third power, times 3 squared, times 5. 
+This uniqueness is what makes primes the building blocks of the integers.""",
+
+        """To solve a quadratic equation of the form ax squared plus bx plus c equals 
+zero, we can use the quadratic formula: x equals negative b plus or minus the square 
+root of b squared minus 4ac, all divided by 2a. The expression under the square root, 
+b squared minus 4ac, is called the discriminant. When the discriminant is positive, 
+there are two distinct real roots. When it equals zero, there is exactly one real root. 
+When it is negative, the roots are complex conjugates.""",
+    ],
+
+    "stackexchange": [
+        # Technical Q&A prose — mirrors stackexchange distribution
+        """The difference between a process and a thread lies in how they share resources. 
+A process is an independent program in execution with its own memory space, file handles, 
+and system resources. Threads, by contrast, exist within a process and share the same 
+memory space, which makes communication between threads faster but introduces the risk 
+of race conditions. Context switching between processes is more expensive than between 
+threads because the operating system must save and restore more state information.""",
+
+        """When designing a REST API, idempotency is an important property to consider. 
+An HTTP method is idempotent if making the same request multiple times produces the same 
+result as making it once. GET, PUT, and DELETE are idempotent, while POST is not. This 
+distinction matters for retry logic: if a network failure occurs during a PUT request, 
+the client can safely retry without risk of duplicate side effects. POST requests, 
+however, may create duplicate resources if retried naively.""",
+
+        """Dynamic programming solves problems by breaking them into overlapping 
+subproblems and storing the results of each subproblem to avoid redundant computation. 
+This technique applies when a problem has optimal substructure, meaning the optimal 
+solution can be constructed from optimal solutions to its subproblems. The two main 
+approaches are memoization, which is top-down with caching, and tabulation, which 
+fills a table bottom-up. The Fibonacci sequence, longest common subsequence, and 
+knapsack problem are classic dynamic programming examples.""",
+    ],
+
+    "cosmopedia": [
+        # Educational explanatory prose
+        """Photosynthesis is the process by which plants, algae, and some bacteria 
+convert light energy into chemical energy stored in glucose. This process occurs 
+primarily in the chloroplasts, which contain the green pigment chlorophyll. 
+Photosynthesis has two main stages: the light-dependent reactions, which occur in 
+the thylakoid membranes and produce ATP and NADPH, and the light-independent reactions, 
+also known as the Calvin cycle, which use that energy to fix carbon dioxide into 
+organic molecules in the stroma.""",
+
+        """The water cycle, also known as the hydrological cycle, describes the 
+continuous movement of water within Earth and its atmosphere. Water evaporates from 
+oceans and lakes when heated by the sun, rises as water vapor, and cools to form 
+clouds through condensation. When droplets in clouds become heavy enough, precipitation 
+occurs in the form of rain, snow, or hail. Water then flows back to the ocean through 
+rivers and groundwater, or is absorbed by plants through transpiration, completing 
+the cycle.""",
+
+        """The French Revolution, which began in 1789, fundamentally transformed 
+the political and social structure of France and influenced the entire Western world. 
+Driven by Enlightenment ideals of liberty, equality, and fraternity, the revolution 
+overthrew the absolute monarchy and established a republic. The causes included 
+financial crisis from years of war, widespread poverty among the lower classes, 
+and growing resentment of aristocratic privilege. The Declaration of the Rights of 
+Man and Citizen, adopted in 1789, articulated principles that would shape democratic 
+governance for centuries.""",
+    ],
+
+    "dclm_edu": [
+        # High-quality educational web text
+        """Neural networks are computational models loosely inspired by the structure 
+of the human brain. They consist of layers of interconnected nodes, called neurons, 
+that transform input data through a series of linear transformations and non-linear 
+activation functions. During training, the network adjusts the weights of these 
+connections using backpropagation and gradient descent to minimize a loss function 
+that measures the difference between predicted and actual outputs. Deep neural networks, 
+which have many hidden layers, can learn hierarchical representations of data.""",
+
+        """Supply and demand is the foundational model of market economics. The law 
+of demand states that, all else being equal, as the price of a good increases, the 
+quantity demanded decreases. The law of supply states that as price increases, 
+producers are willing to supply more of the good. The market reaches equilibrium 
+at the price where quantity supplied equals quantity demanded. When external factors 
+shift either curve, such as a change in consumer income or production costs, the 
+equilibrium price and quantity adjust accordingly.""",
+    ],
+
+    "dolmino": [
+        # General high-quality web text
+        """Climate change refers to long-term shifts in global temperatures and weather 
+patterns. While some natural variation is normal, scientific evidence shows that human 
+activities, particularly the burning of fossil fuels, have been the dominant driver of 
+climate change since the mid-twentieth century. The release of greenhouse gases such as 
+carbon dioxide and methane traps heat in the atmosphere, raising average global 
+temperatures. This warming drives changes in precipitation patterns, sea level rise, 
+and increased frequency of extreme weather events.""",
+
+        """Antibiotics are compounds that kill bacteria or inhibit their growth. 
+They work through several mechanisms: some, like penicillin, disrupt the synthesis 
+of bacterial cell walls; others inhibit protein synthesis by binding to bacterial 
+ribosomes; and some interfere with DNA replication. Critically, antibiotics are 
+ineffective against viral infections such as the common cold or influenza. 
+Overuse and misuse of antibiotics has led to the emergence of antibiotic-resistant 
+bacteria, which represent one of the most serious threats to global public health.""",
+    ],
+
+    "pes2o": [
+        # Scientific paper prose
+        """Transformer architectures have become the dominant paradigm in natural 
+language processing since their introduction in 2017. The core innovation is the 
+self-attention mechanism, which allows each token in a sequence to attend to all 
+other tokens simultaneously, capturing long-range dependencies more effectively 
+than recurrent architectures. Scaled dot-product attention computes a weighted 
+sum of values, where the weights are determined by the compatibility between 
+queries and keys. Multi-head attention applies this mechanism in parallel across 
+multiple learned subspaces.""",
+
+        """Gradient descent is an iterative optimization algorithm used to minimize 
+a differentiable objective function. At each step, the parameters are updated in 
+the direction opposite to the gradient of the loss with respect to those parameters, 
+scaled by a learning rate hyperparameter. Stochastic gradient descent approximates 
+the true gradient using a single sample or mini-batch, introducing noise that can 
+help escape local minima. Adaptive methods such as Adam maintain per-parameter 
+learning rates based on estimates of first and second moments of the gradients.""",
+    ],
+}
+
+
+@torch.no_grad()
+def compute_passage_perplexity(model, tokenizer, text):
+    """Compute perplexity of a model on a single text passage."""
+    ids = tokenizer.encode(text, return_tensors="pt").to(device)
+    if ids.shape[1] < 2:
+        return float("nan")
+    # Truncate to max_seq_len if needed
+    ids = ids[:, :cfg.max_seq_len]
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        logits = model(ids)
+    log_probs = F.log_softmax(logits, dim=-1)
+    token_scores = log_probs[0, :-1, :].gather(
+        1, ids[0, 1:].unsqueeze(-1)
+    ).squeeze(-1)
+    avg_nll = -token_scores.mean().item()
+    return math.exp(avg_nll)
+
+
+def evaluate_domain_perplexity(model, tokenizer):
+    print("\n" + "="*65)
+    print("  SECTION A — Domain Perplexity on Curated Passages")
+    print("  (No val.bin used — passages embedded in script)")
+    print("="*65)
+
+    domain_results = {}
+    all_ppls       = []
+
+    for domain, passages in DOMAIN_PASSAGES.items():
+        ppls = []
+        print(f"\n  ── {domain.upper()} ──")
+        for i, passage in enumerate(passages):
+            ppl = compute_passage_perplexity(model, tokenizer, passage)
+            ppls.append(ppl)
+            token_count = len(tokenizer.encode(passage))
+            print(f"  Passage {i+1}: ppl={ppl:.2f}  tokens={token_count}")
+
+        avg_ppl = np.mean(ppls)
+        std_ppl = np.std(ppls)
+        domain_results[domain] = {"avg_ppl": avg_ppl, "std": std_ppl, "ppls": ppls}
+        all_ppls.extend(ppls)
+        print(f"  Avg: {avg_ppl:.2f}  Std: {std_ppl:.2f}")
+
+    overall_ppl = np.mean(all_ppls)
+    print(f"\n  {'='*45}")
+    print(f"  {'Domain':<20} {'Avg PPL':>10}  {'Std':>8}  {'Signal'}")
+    print(f"  {'-'*55}")
+    for domain, res in sorted(domain_results.items(), key=lambda x: x[1]["avg_ppl"]):
+        if res["avg_ppl"] < 5:
+            signal = "★ Excellent"
+        elif res["avg_ppl"] < 10:
+            signal = "✓ Good"
+        elif res["avg_ppl"] < 20:
+            signal = "~ Moderate"
+        else:
+            signal = "✗ Weak — underfit"
+        print(f"  {domain:<20} {res['avg_ppl']:>10.2f}  {res['std']:>8.2f}  {signal}")
+
+    print(f"\n  Overall avg PPL: {overall_ppl:.2f}")
+    print(f"  Interpretation: lower PPL = model learned that domain better")
+    print(f"  Domains with PPL >20 are undertrained — prioritize in SFT data mix")
+    return domain_results, overall_ppl
+
+
+# =============================================================================
+# SECTION B — NATURAL COMPLETION LOG-PROB SCORING
+# MC reformatted as natural text completions — valid for base models.
+# No Q/A format, no instructions. Pure "which continuation is more likely?"
+# =============================================================================
+
+NATURAL_COMPLETIONS = {
+
+    "mathematics": [
+        {
+            "prefix"  : "The derivative of sin(x) with respect to x is",
+            "valid"   : " cos(x)",
+            "invalid" : " -sin(x)",
+        },
+        {
+            "prefix"  : "The integral of 2x with respect to x equals",
+            "valid"   : " x squared plus a constant",
+            "invalid" : " 2 plus a constant",
+        },
+        {
+            "prefix"  : "In a right triangle, the square of the hypotenuse equals the sum of",
+            "valid"   : " the squares of the other two sides",
+            "invalid" : " the products of the other two sides",
+        },
+        {
+            "prefix"  : "The quadratic formula gives the roots of ax² + bx + c = 0 as x equals negative b plus or minus the square root of b squared minus 4ac, divided by",
+            "valid"   : " 2a",
+            "invalid" : " 4a",
+        },
+        {
+            "prefix"  : "The value of pi is approximately",
+            "valid"   : " 3.14159",
+            "invalid" : " 2.71828",
+        },
+        {
+            "prefix"  : "A function f(x) is said to be continuous at a point if the limit of f(x) as x approaches that point",
+            "valid"   : " equals the value of the function at that point",
+            "invalid" : " does not exist at that point",
+        },
+    ],
+
+    "computer_science": [
+        {
+            "prefix"  : "In computer science, an algorithm with O(log n) time complexity is significantly faster than one with O(n) complexity because as input size grows, the number of operations grows",
+            "valid"   : " logarithmically rather than linearly",
+            "invalid" : " linearly rather than logarithmically",
+        },
+        {
+            "prefix"  : "A hash table provides average-case O(1) time complexity for insertions and lookups because each key is mapped directly to a memory location using",
+            "valid"   : " a hash function",
+            "invalid" : " a sorting algorithm",
+        },
+        {
+            "prefix"  : "Recursion is a programming technique where a function solves a problem by calling",
+            "valid"   : " itself with a smaller version of the problem",
+            "invalid" : " another function with a larger version of the problem",
+        },
+        {
+            "prefix"  : "In object-oriented programming, inheritance allows a subclass to",
+            "valid"   : " reuse and extend the properties and methods of a parent class",
+            "invalid" : " replace the properties and methods of a parent class entirely",
+        },
+        {
+            "prefix"  : "The TCP protocol ensures reliable data transmission by requiring the receiver to send",
+            "valid"   : " acknowledgments for packets received",
+            "invalid" : " retransmissions for packets received",
+        },
+    ],
+
+    "science": [
+        {
+            "prefix"  : "Atoms of the same element that have different numbers of neutrons are called",
+            "valid"   : " isotopes",
+            "invalid" : " ions",
+        },
+        {
+            "prefix"  : "According to Newton's third law of motion, for every action there is an equal and",
+            "valid"   : " opposite reaction",
+            "invalid" : " identical reaction in the same direction",
+        },
+        {
+            "prefix"  : "In cellular respiration, glucose is broken down in the presence of oxygen to produce ATP, carbon dioxide, and",
+            "valid"   : " water",
+            "invalid" : " nitrogen",
+        },
+        {
+            "prefix"  : "The speed of light in a vacuum is approximately 3 times 10 to the power of 8",
+            "valid"   : " meters per second",
+            "invalid" : " kilometers per hour",
+        },
+        {
+            "prefix"  : "Natural selection, as proposed by Darwin, states that organisms with traits better suited to their environment are more likely to",
+            "valid"   : " survive and reproduce, passing on those traits",
+            "invalid" : " mutate rapidly and change species within a generation",
+        },
+    ],
+
+    "logic_and_reasoning": [
+        {
+            "prefix"  : "If all A are B, and all B are C, then it logically follows that all A are",
+            "valid"   : " C",
+            "invalid" : " neither B nor C",
+        },
+        {
+            "prefix"  : "The contrapositive of the statement 'if P then Q' is logically equivalent to the original and states 'if not Q then",
+            "valid"   : " not P'",
+            "invalid" : " not P and not Q'",
+        },
+        {
+            "prefix"  : "A deductive argument is valid if the conclusion follows necessarily from the premises, and sound if it is valid and the premises are",
+            "valid"   : " true",
+            "invalid" : " false",
+        },
+        {
+            "prefix"  : "The logical fallacy of affirming the consequent occurs when one incorrectly concludes that because Q is true and P implies Q,",
+            "valid"   : " P must therefore be true",
+            "invalid" : " Q must therefore be false",
+        },
+    ],
+
+    "academic_prose_quality": [
+        # Tests whether the model prefers grammatically and semantically
+        # coherent academic continuations over plausible-sounding wrong ones
+        {
+            "prefix"  : "The results of the experiment were consistent with the hypothesis, suggesting that the proposed mechanism",
+            "valid"   : " plays a significant role in the observed phenomenon",
+            "invalid" : " has no relationship to the observed phenomenon whatsoever",
+        },
+        {
+            "prefix"  : "Prior research has established a correlation between sleep deprivation and cognitive decline, but correlation does not imply",
+            "valid"   : " causation",
+            "invalid" : " correlation",
+        },
+        {
+            "prefix"  : "The authors acknowledge several limitations of this study, including the small sample size, which may affect the",
+            "valid"   : " generalizability of the findings",
+            "invalid" : " statistical significance of the original claims",
+        },
+    ],
+}
+
+
+def evaluate_natural_completions(model, tokenizer):
+    print("\n" + "="*65)
+    print("  SECTION B — Natural Completion Log-Prob Scoring")
+    print("  (Base-model valid: no instruction format, pure text completion)")
+    print("="*65)
+
+    category_results = {}
+    grand_correct    = 0
+    grand_total      = 0
+
+    for category, items in NATURAL_COMPLETIONS.items():
+        correct = 0
+        print(f"\n  ── {category.upper().replace('_', ' ')} ──")
+        for item in items:
+            score_valid   = continuation_log_prob(
+                model, tokenizer, item["prefix"], item["valid"])
+            score_invalid = continuation_log_prob(
+                model, tokenizer, item["prefix"], item["invalid"])
+            is_correct    = score_valid > score_invalid
+            correct      += int(is_correct)
+            mark          = "✓" if is_correct else "✗"
+            margin        = score_valid - score_invalid
+
+            print(f"  {mark}  {item['prefix'][:70]}")
+            print(f"       valid  : {item['valid']:<45} score={score_valid:.3f}")
+            print(f"       invalid: {item['invalid']:<45} score={score_invalid:.3f}")
+            print(f"       margin : {margin:+.3f}  {'(confident)' if abs(margin) > 0.5 else '(uncertain)'}")
+
+        acc = correct / len(items)
+        category_results[category] = {"correct": correct, "total": len(items), "acc": acc}
+        print(f"  Accuracy: {correct}/{len(items)} = {acc:.0%}")
+        grand_correct += correct
+        grand_total   += len(items)
+
+    overall_acc = grand_correct / grand_total
+    print(f"\n  Overall: {grand_correct}/{grand_total} = {overall_acc:.0%}")
+    print(f"  Random baseline: 50%  |  Target for SFT readiness: >75%")
+    print(f"  Interpretation: this measures encoded knowledge, not instruction following")
+    return category_results, overall_acc
+
+
+# =============================================================================
+# SECTION C — FEW-SHOT IN-CONTEXT LEARNING PROBE
+# The only valid way to get structured output from a base model.
+# We prime the context with complete examples — the model learns the
+# format from context alone, no fine-tuning required.
+# Tests ICL ability which emerges purely from pretraining scale.
+# =============================================================================
+
+FEW_SHOT_TASKS = [
+
+    {
+        "label": "math_word_problems",
+        "description": "Arithmetic reasoning with few-shot examples",
+        "shots": [
+            {
+                "problem": "A baker makes 12 loaves of bread per hour. How many loaves does he make in 5 hours?",
+                "answer"  : "The baker makes 12 loaves per hour. In 5 hours he makes 12 times 5 equals 60 loaves."
+            },
+            {
+                "problem": "A car travels 55 miles per hour. How far does it travel in 3 hours?",
+                "answer"  : "The car travels 55 miles per hour. In 3 hours it travels 55 times 3 equals 165 miles."
+            },
+        ],
+        "probes": [
+            {
+                "problem" : "A factory produces 150 units per day. How many units does it produce in 6 days?",
+                "expected": "900",
+            },
+            {
+                "problem" : "A cyclist rides at 18 miles per hour. How far does she ride in 4 hours?",
+                "expected": "72",
+            },
+            {
+                "problem" : "A printer prints 30 pages per minute. How many pages does it print in 8 minutes?",
+                "expected": "240",
+            },
+        ],
+    },
+
+    {
+        "label": "logical_syllogisms",
+        "description": "Deductive reasoning with few-shot examples",
+        "shots": [
+            {
+                "problem": "All birds have wings. A sparrow is a bird. Does a sparrow have wings?",
+                "answer"  : "All birds have wings. A sparrow is a bird. Therefore, a sparrow has wings. Yes."
+            },
+            {
+                "problem": "All metals conduct electricity. Iron is a metal. Does iron conduct electricity?",
+                "answer"  : "All metals conduct electricity. Iron is a metal. Therefore, iron conducts electricity. Yes."
+            },
+        ],
+        "probes": [
+            {
+                "problem" : "All squares are rectangles. Shape X is a square. Is shape X a rectangle?",
+                "expected": "yes",
+            },
+            {
+                "problem" : "No fish are mammals. A salmon is a fish. Is a salmon a mammal?",
+                "expected": "no",
+            },
+            {
+                "problem" : "All prime numbers greater than 2 are odd. 17 is a prime number greater than 2. Is 17 odd?",
+                "expected": "yes",
+            },
+        ],
+    },
+
+    {
+        "label": "pattern_completion",
+        "description": "Sequence and pattern reasoning",
+        "shots": [
+            {
+                "problem": "What comes next in the sequence: 2, 4, 6, 8, ?",
+                "answer"  : "The sequence increases by 2 each time. The next number is 10."
+            },
+            {
+                "problem": "What comes next in the sequence: 1, 3, 9, 27, ?",
+                "answer"  : "The sequence multiplies by 3 each time. The next number is 81."
+            },
+        ],
+        "probes": [
+            {
+                "problem" : "What comes next in the sequence: 5, 10, 15, 20, ?",
+                "expected": "25",
+            },
+            {
+                "problem" : "What comes next in the sequence: 1, 4, 9, 16, ?",
+                "expected": "25",
+            },
+            {
+                "problem" : "What comes next in the sequence: 100, 50, 25, 12.5, ?",
+                "expected": "6.25",
+            },
+        ],
+    },
+
+    {
+        "label": "cause_and_effect",
+        "description": "Causal reasoning with few-shot priming",
+        "shots": [
+            {
+                "problem": "A metal rod is heated. What happens to its length?",
+                "answer"  : "When a metal rod is heated, its molecules move faster and spread apart. The rod expands and its length increases."
+            },
+            {
+                "problem": "A plant is kept in complete darkness for a month. What happens to it?",
+                "answer"  : "Without light, the plant cannot perform photosynthesis and cannot produce energy. The plant wilts and eventually dies."
+            },
+        ],
+        "probes": [
+            {
+                "problem" : "Water is cooled below 0 degrees Celsius. What happens to it?",
+                "expected": "ice",
+            },
+            {
+                "problem" : "A gas is compressed into a smaller volume at constant temperature. What happens to its pressure?",
+                "expected": "increase",
+            },
+            {
+                "problem" : "An object is dropped from a height in a vacuum. What happens to its speed as it falls?",
+                "expected": "increase",
+            },
+        ],
+    },
+]
+
+
+def build_few_shot_prompt(task, probe):
+    """Construct the full few-shot prompt for a given task and probe."""
+    lines = []
+    for i, shot in enumerate(task["shots"]):
+        lines.append(f"Problem: {shot['problem']}")
+        lines.append(f"Solution: {shot['answer']}")
+        lines.append("")
+    lines.append(f"Problem: {probe['problem']}")
+    lines.append("Solution:")
+    return "\n".join(lines)
+
+
+def evaluate_few_shot_icl(model, tokenizer):
+    print("\n" + "="*65)
+    print("  SECTION C — Few-Shot In-Context Learning")
+    print("  (Only valid way to probe structured reasoning from a base model)")
+    print("="*65)
+
+    task_results = []
+
+    for task in FEW_SHOT_TASKS:
+        print(f"\n  ── {task['label'].upper().replace('_', ' ')} ──")
+        print(f"  {task['description']}")
+        correct = 0
+
+        for probe in task["probes"]:
+            prompt = build_few_shot_prompt(task, probe)
+            output = generate(model, tokenizer, prompt,
+                              max_new_tokens=100,
+                              temperature=0.3,   # low temp — we want the model's best guess
+                              top_k=20)
+
+            # Take only the first line of output — the model's direct answer
+            first_line = output.strip().split("\n")[0].strip()
+            hit        = probe["expected"].lower() in (first_line.lower() + output.lower()[:100])
+            correct   += int(hit)
+            mark       = "✓" if hit else "✗"
+
+            print(f"\n  {mark}  Problem : {probe['problem']}")
+            print(f"       Expected: {probe['expected']}")
+            print(f"       Output  : {first_line[:120]}")
+
+        acc = correct / len(task["probes"])
+        task_results.append({
+            "label"  : task["label"],
+            "correct": correct,
+            "total"  : len(task["probes"]),
+            "acc"    : acc,
+        })
+        print(f"  Accuracy: {correct}/{len(task['probes'])} = {acc:.0%}")
+
+    overall = np.mean([r["acc"] for r in task_results])
+
+    print(f"\n  --- Few-Shot ICL Summary ---")
+    print(f"  {'Task':<30} {'Accuracy':>10}")
+    print(f"  {'-'*42}")
+    for r in task_results:
+        bar  = "█" * int(r["acc"] * 10) + "░" * (10 - int(r["acc"] * 10))
+        print(f"  {r['label']:<30} {bar}  {r['acc']:.0%}")
+    print(f"  {'OVERALL':<30} {overall:.0%}")
+
+    print(f"\n  Interpretation:")
+    print(f"  ICL accuracy measures how well the model generalises from examples")
+    print(f"  in its context window. This is a direct product of pretraining quality.")
+    print(f"  Strong ICL → SFT will be very effective.")
+    print(f"  Weak ICL   → SFT will need more data and more epochs.")
+
+    if overall >= 0.7:
+        print(f"  Signal: ★ Strong ICL — excellent SFT candidate")
+    elif overall >= 0.45:
+        print(f"  Signal: ~ Moderate ICL — SFT will work but needs good data")
+    else:
+        print(f"  Signal: ✗ Weak ICL — base model may need more pretraining")
+
+    return task_results, overall
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+import sys
+
+class Tee:
+    def __init__(self, filepath):
+        self.file    = open(filepath, "w", encoding="utf-8")
+        self.stdout  = sys.stdout
+    def write(self, data):
+        self.file.write(data)
+        self.stdout.write(data)
+    def flush(self):
+        self.file.flush()
+        self.stdout.flush()
+    def close(self):
+        self.file.close()
+
+if __name__ == "__main__":
+    tee = Tee("evaluation_results.txt")
+    sys.stdout = tee
+
+    try:
+        print("\n" + "="*65)
+        print("  SLM Base Model Evaluation")
+        print("  Training data: cosmopedia | dclm-edu | dolmino |")
+        print("                 openwebmath | pes2o | stackexchange")
+        print("  Evaluation   : fully independent — no val.bin used")
+        print("="*65)
+
+        model     = load_model()
+        tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer)
+
+        # --- Existing sections (language quality) ---
+        gen_results             = evaluate_generation_quality(model, tokenizer)
+        mc_results, mc_overall  = evaluate_multiple_choice(model, tokenizer)
+        cot_results             = evaluate_chain_of_thought(model, tokenizer)
+        know_results            = evaluate_knowledge(model, tokenizer)
+        stress_results          = evaluate_stress(model, tokenizer)
+
+        # --- New sections (base-model-valid) ---
+        domain_ppl, overall_ppl         = evaluate_domain_perplexity(model, tokenizer)
+        nat_results, nat_overall        = evaluate_natural_completions(model, tokenizer)
+        icl_results, icl_overall        = evaluate_few_shot_icl(model, tokenizer)
+
+        # --- Reports ---
+        print_final_report(mc_results, mc_overall, cot_results, know_results)
+
+        # Extended report for new sections
+        print("\n" + "="*65)
+        print("  EXTENDED REPORT — BASE MODEL VALIDITY SECTIONS")
+        print("="*65)
+
+        print(f"\n  Section A — Domain Perplexity")
+        for domain, res in sorted(domain_ppl.items(), key=lambda x: x[1]["avg_ppl"]):
+            bar = "█" * max(1, int(20 - min(res["avg_ppl"], 20)))  + "░" * min(int(res["avg_ppl"]), 20)
+            print(f"  {domain:<20} ppl={res['avg_ppl']:>7.2f}  {bar}")
+        print(f"  Overall avg PPL: {overall_ppl:.2f}")
+
+        print(f"\n  Section B — Natural Completion Accuracy")
+        for cat, res in nat_results.items():
+            print(f"  {cat:<30} {res['correct']}/{res['total']} = {res['acc']:.0%}")
+        print(f"  Overall: {nat_overall:.0%}  (random baseline=50%)")
+
+        print(f"\n  Section C — Few-Shot ICL Accuracy")
+        for r in icl_results:
+            print(f"  {r['label']:<30} {r['correct']}/{r['total']} = {r['acc']:.0%}")
+        print(f"  Overall: {icl_overall:.0%}")
+
+        print(f"\n  ── Composite Readiness Score ──")
+        # Weighted: domain PPL contributes inversely, others directly
+        ppl_score  = max(0.0, min(1.0, (20 - overall_ppl) / 20))  # 0=PPL≥20, 1=PPL≤0
+        composite  = (ppl_score * 0.35) + (nat_overall * 0.35) + (icl_overall * 0.30)
+        print(f"  Domain PPL score  (35%) : {ppl_score:.2f}")
+        print(f"  Natural completion(35%) : {nat_overall:.2f}")
+        print(f"  Few-shot ICL      (30%) : {icl_overall:.2f}")
+        print(f"  Composite score         : {composite:.2f} / 1.00")
+        if composite >= 0.70:
+            print(f"  Verdict: ★ Strong base — proceed to SFT")
+        elif composite >= 0.50:
+            print(f"  Verdict: ~ Good base — SFT will be effective")
+        elif composite >= 0.35:
+            print(f"  Verdict: ~ Moderate — SFT needed, consider data quality")
+        else:
+            print(f"  Verdict: ✗ Weak base — revisit pretraining before SFT")
+        print("="*65 + "\n")
+
+    finally:
+        sys.stdout = tee.stdout
+        tee.close()
+        print("Results saved → evaluation_results.txt")
+========================
 <<pretrain.py>>
 import os
 import gc
@@ -986,7 +3636,7 @@ cnfg = SLMConfig()
 SKIP_DIRS = {".venv", "venv", "env", "__pycache__", ".git", 
              "node_modules", "site-packages", ".mypy_cache", ".tox", 
              "base_models", "batches", "checkpoints", "data", "data copy",
-             "data_bkp", "other", "plan", "training_artifacts"
+             "data_bkp", "plan", "training_artifacts"
             }
 
 def consolidate_py_files(root_folder, output_file="consolidated.txt"):
@@ -1011,4 +3661,1634 @@ if __name__ == "__main__":
     root = "/home/prathamesh/Data-Science/SLM/"
     output = "codebase.txt"
     consolidate_py_files(root, output)
+========================
+<<other/benchmark_test.py>>
+import os
+import json
+import time
+import torch
+import torch.nn.functional as F
+from transformers import AutoTokenizer
+from model_architecture import CustomTransformer
+from config import SLMConfig
+
+# ── Configuration & Tokenizer ──
+cfg = SLMConfig()
+tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer)
+
+# ── Load Model ──
+def load_best_model():
+    path = os.path.join(cfg.ckpt_dir, "best_model.pt")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"No checkpoint found at {path}")
+    
+    print(f"Loading checkpoint: {path}")
+    model = CustomTransformer(cfg)
+    model = model.to(torch.bfloat16)
+    ckpt  = torch.load(path, map_location="cpu", weights_only=False)
+    
+    state_dict = {k.replace("_orig_mod.", ""): v for k, v in ckpt["model"].items()}
+    model.load_state_dict(state_dict)
+    model.eval()
+    return model
+
+# ── Generation Function ──
+@torch.no_grad()
+def generate(
+    model,
+    prompt: str,
+    max_new_tokens: int = 150,
+    temperature: float  = 0.3,  # Low temp for deterministic reasoning
+    top_k: int          = 40,
+    top_p: float        = 0.90,
+    repetition_penalty: float = 1.2,
+    device: str         = "cpu",
+):
+    model = model.to(device)
+    ids   = tokenizer.encode(prompt, add_special_tokens=False)
+    x     = torch.tensor([ids], dtype=torch.long, device=device)
+
+    start_time = time.perf_counter()
+    tokens_generated = 0
+
+    for _ in range(max_new_tokens):
+        x_cond = x[:, -cfg.max_seq_len:]
+        logits = model(x_cond)
+        logits = logits[:, -1, :] 
+
+        if repetition_penalty > 1.0:
+            for tok in set(x[0].tolist()):
+                if logits[0, tok] < 0:
+                    logits[0, tok] *= repetition_penalty
+                else:
+                    logits[0, tok] /= repetition_penalty
+
+        logits = logits / temperature
+
+        if top_k > 0:
+            top_k_vals = torch.topk(logits, top_k).values
+            logits[logits < top_k_vals[:, -1:]] = float("-inf")
+
+        if top_p < 1.0:
+            sorted_logits, sorted_idx = torch.sort(logits, descending=True)
+            cum_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+            sorted_idx_remove = cum_probs - F.softmax(sorted_logits, dim=-1) > top_p
+            sorted_logits[sorted_idx_remove] = float("-inf")
+            logits = torch.zeros_like(logits).scatter_(1, sorted_idx, sorted_logits)
+
+        probs     = F.softmax(logits, dim=-1)
+        next_tok  = torch.multinomial(probs, num_samples=1)
+
+        if next_tok.item() == tokenizer.eos_token_id:
+            break
+
+        x = torch.cat([x, next_tok], dim=1)
+        tokens_generated += 1
+
+    end_time = time.perf_counter()
+    generation_time = end_time - start_time
+    tok_per_sec = tokens_generated / generation_time if generation_time > 0 else 0
+
+    output_ids = x[0, len(ids):].tolist()
+    generated_text = tokenizer.decode(output_ids, skip_special_tokens=True)
+    
+    return generated_text, tokens_generated, tok_per_sec
+
+# ── Reasoning Benchmark Suite ──
+BENCHMARK_SUITE = {
+    "Math & Arithmetic": [
+        "If I have 5 apples and eat 2, how many apples do I have left?",
+        "A train leaves New York at 3 PM traveling 60 mph. How far has it traveled by 5 PM?",
+        "Solve this equation for x: 3x + 9 = 24. Step 1: Subtract 9 from both sides. Step 2:"
+    ],
+    "Logic & Deduction": [
+        "All cats have tails. Fluffy is a cat. Therefore,",
+        "If Alice is taller than Bob, and Bob is taller than Charlie, who is the shortest?",
+        "There are three doors. Door 1 has a bear. Door 2 has a lion. Door 3 is safe. Which door should I open?"
+    ],
+    "Spatial & Physical": [
+        "If you drop a fragile glass on a concrete floor, what is most likely to happen?",
+        "Which is heavier: 1 pound of feathers or 1 pound of solid iron?",
+        "If I leave an ice cube on the kitchen counter in the middle of summer, what will happen to it?"
+    ],
+    "Coding & Syntax": [
+        "Write a Python function to calculate the factorial of a number.",
+        "def is_even(num):\n    \"\"\"Returns True if num is even, else False\"\"\"",
+        "List three popular programming languages:"
+    ]
+}
+
+def run_benchmark():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Initializing hardware: {device}")
+    
+    model = load_best_model()
+    
+    results = {
+        "model_params": sum(p.numel() for p in model.parameters()),
+        "device": device,
+        "temperature": 0.3, # Hardcoded for this run
+        "evaluations": {}
+    }
+
+    print("\n" + "="*60)
+    print("🚀 Initiating Automated Reasoning Benchmark")
+    print("="*60 + "\n")
+
+    for category, prompts in BENCHMARK_SUITE.items():
+        print(f"\n--- Testing Domain: {category} ---")
+        results["evaluations"][category] = []
+        
+        for i, prompt in enumerate(prompts):
+            print(f"\n[Prompt {i+1}/{len(prompts)}]: {prompt}")
+            
+            output, tok_count, tps = generate(model, prompt, device=device)
+            
+            print(f"Output: {output}")
+            print(f"Metrics: {tok_count} tokens @ {tps:.1f} tok/sec")
+            
+            results["evaluations"][category].append({
+                "prompt": prompt,
+                "response": output.strip(),
+                "metrics": {
+                    "tokens_generated": tok_count,
+                    "tokens_per_second": round(tps, 2)
+                }
+            })
+
+    # Save to disk
+    output_file = "benchmark_results.json"
+    with open(output_file, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=4)
+        
+    print("\n" + "="*60)
+    print(f"✅ Benchmark complete! Results saved to {output_file}")
+    print("="*60)
+
+if __name__ == "__main__":
+    run_benchmark()
+========================
+<<other/check_env.py>>
+import torch
+import flash_attn
+
+print("=== Environment Check ===")
+print(f"PyTorch Version: {torch.__version__}")
+print(f"CUDA Available:  {torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    print(f"Device Name:     {torch.cuda.get_device_name(0)}")
+    print(f"CUDA Capability: {torch.cuda.get_device_capability(0)}")
+print(f"Flash-Attn:      {flash_attn.__version__}")
+========================
+<<other/data_merge.py>>
+"""
+Master Merge & Split Pipeline (CORRECTED)
+------------------------------
+Pools only train.bin and val.bin files together and enforces an exact global split:
+  - Train: 4,000,000,000 tokens
+  - Val  : Remaining tokens (~19.86 Million)
+"""
+
+import os
+import glob
+import numpy as np
+from tqdm import tqdm
+
+DATA_DIR = "data"
+MASTER_TRAIN = os.path.join(DATA_DIR, "master_train.bin")
+MASTER_VAL   = os.path.join(DATA_DIR, "master_val.bin")
+
+TARGET_TRAIN = 4_000_000_000
+
+def get_clean_files():
+    # Find ONLY train.bin and val.bin, strictly ignoring raw.bin, master_, and tiny_story
+    files = []
+    for split in ["train.bin", "val.bin"]:
+        files.extend(glob.glob(os.path.join(DATA_DIR, "**", split), recursive=True))
+        
+    clean_files = [f for f in files if "master_" not in f and "tiny_story" not in f]
+    return sorted(clean_files)
+
+def build_master_dataset():
+    files = get_clean_files()
+    if not files:
+        print("⚠ No valid train.bin or val.bin files found!")
+        return
+
+    # 1. Calculate the exact global token count
+    total_tokens = sum(os.path.getsize(f) // 2 for f in files)
+    target_val = total_tokens - TARGET_TRAIN
+
+    print(f"\n{'='*60}")
+    print(f"  MASTER MERGE INITIALIZED (Strict Mode)")
+    print(f"{'='*60}")
+    print(f"  Total Found : {total_tokens:>15,} tokens")
+    print(f"  -> Train    : {TARGET_TRAIN:>15,} tokens -> {MASTER_TRAIN}")
+    print(f"  -> Val      : {target_val:>15,} tokens -> {MASTER_VAL}")
+    print(f"{'='*60}\n")
+
+    # 2. Allocate the master files on disk
+    train_mmap = np.memmap(MASTER_TRAIN, dtype=np.uint16, mode="w+", shape=(TARGET_TRAIN,))
+    val_mmap   = np.memmap(MASTER_VAL,   dtype=np.uint16, mode="w+", shape=(target_val,))
+
+    # 3. Stream data across
+    CHUNK_SIZE   = 10_000_000  # 20MB chunks
+    train_offset = 0
+    val_offset   = 0
+
+    for f in files:
+        ds_name = "/".join(f.split("/")[-2:])
+        tokens_in_file = os.path.getsize(f) // 2
+        source = np.memmap(f, dtype=np.uint16, mode="r")
+        
+        for i in tqdm(range(0, tokens_in_file, CHUNK_SIZE), desc=f"  Merging {ds_name:<25}"):
+            end = min(i + CHUNK_SIZE, tokens_in_file)
+            chunk = source[i:end]
+            chunk_len = len(chunk)
+            
+            if train_offset < TARGET_TRAIN:
+                space_left = TARGET_TRAIN - train_offset
+                
+                if chunk_len <= space_left:
+                    train_mmap[train_offset : train_offset + chunk_len] = chunk
+                    train_offset += chunk_len
+                else:
+                    train_mmap[train_offset : TARGET_TRAIN] = chunk[:space_left]
+                    train_offset = TARGET_TRAIN
+                    
+                    val_chunk = chunk[space_left:]
+                    val_mmap[val_offset : val_offset + len(val_chunk)] = val_chunk
+                    val_offset += len(val_chunk)
+            else:
+                val_mmap[val_offset : val_offset + chunk_len] = chunk
+                val_offset += chunk_len
+                
+        train_mmap.flush()
+        val_mmap.flush()
+        del source
+
+    del train_mmap, val_mmap
+    print(f"\n  ✅ Master Merge Complete.")
+    print(f"  Train: {os.path.getsize(MASTER_TRAIN) / 1e9:.2f} GB")
+    print(f"  Val  : {os.path.getsize(MASTER_VAL) / 1e6:.2f} MB")
+
+def sanity_check():
+    print(f"\n{'='*60}")
+    print(f"  Final Sanity Check")
+    print(f"{'='*60}")
+    for path, label in [(MASTER_TRAIN, "master_train"), (MASTER_VAL, "master_val")]:
+        data   = np.memmap(path, dtype=np.uint16, mode="r")
+        max_id = int(data.max())
+        status = "✓ valid" if max_id < 32_000 else "✗ INVALID"
+        print(f"  [{label}] Tokens: {len(data):,} | Max ID: {max_id} ({status})")
+        del data
+
+if __name__ == "__main__":
+    build_master_dataset()
+    sanity_check()
+========================
+<<other/smoke_test.py>>
+import torch
+import torch.nn.functional as F
+from model_architecture import CustomTransformer
+from config import SLMConfig
+from pretrain import build_optimizers
+
+def run_final_smoke_test():
+    print("🚀 Starting 36-Layer Deep Reasoning Smoke Test...\n")
+    
+    # ── 1. Injecting the 36-Layer Config ──
+    cfg = SLMConfig()
+    cfg.d_model  = 1024
+    cfg.n_layers = 36    
+    cfg.n_heads  = 16    
+    cfg.n_kv_heads = 4
+    cfg.ffn_dim  = 4096
+    cfg.max_seq_len = 4096
+    cfg.micro_batch = 2  
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    print(f"Building Deep Model ({cfg.n_layers} Layers, {cfg.d_model} Dim)...")
+    model = CustomTransformer(cfg).to(device).to(torch.bfloat16)
+    
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"✅ Model built! Total Parameters: {total_params / 1e6:.2f} M")
+
+    print(f"Allocating dummy tensors (Micro-batch: {cfg.micro_batch}, Seq: {cfg.max_seq_len})...")
+    dummy_x = torch.randint(0, cfg.vocab_size, (cfg.micro_batch, cfg.max_seq_len), device=device)
+    dummy_y = torch.randint(0, cfg.vocab_size, (cfg.micro_batch, cfg.max_seq_len), device=device)
+        
+    print("Initializing Muon & 8-bit AdamW Optimizers...")
+    opt_muon, opt_adam = build_optimizers(model)
+    
+    try:
+        print("\n🔥 Running Forward Pass...")
+        logits = model(dummy_x)
+        
+        print("🔥 Calculating Loss...")
+        loss = F.cross_entropy(logits.view(-1, cfg.vocab_size), dummy_y.view(-1))
+        
+        print("🔥 Running Backward Pass (Gradient calculation)...")
+        loss.backward()
+        
+        print("🔥 Running Optimizer Steps...")
+        opt_muon.step()
+        opt_adam.step()
+        opt_muon.zero_grad()
+        opt_adam.zero_grad()
+        
+        peak_mem = torch.cuda.max_memory_allocated() / (1024**3)
+        print(f"\n🎉 SUCCESS! Your 8GB GPU handled the 36-Layer architecture.")
+        print(f"📊 Peak VRAM usage: {peak_mem:.2f} GB / 8.00 GB")
+        
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            print("\n💀 OOM ERROR: 36 Layers with a micro_batch of 2 is too much.")
+            print("  Fix: Change `cfg.micro_batch = 1` in your config and try again.")
+        else:
+            print(f"\n❌ FAILED with error: {e}")
+
+if __name__ == "__main__":
+    run_final_smoke_test()
+========================
+<<other/verify_params.py>>
+from model_architecture import CustomTransformer
+from config import SLMConfig
+
+def count_parameters(model):
+    # Sum up all parameters that require a gradient
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+if __name__ == "__main__":
+    # 1. Load your standard configuration
+    cfg = SLMConfig()
+    
+    # 2. Initialize the full 24-layer model
+    print(f"Initializing CustomTransformer with {cfg.n_layers} layers...")
+    model = CustomTransformer(cfg)
+    
+    # 3. Calculate total params
+    total_params = count_parameters(model)
+    
+    print("\n--- Parameter Tally ---")
+    print(f"Total Trainable Parameters: {total_params:,}")
+    print(f"Target Parameters:         ~209,000,000")
+    
+    # 4. Breakdown by component type for transparency
+    emb_params = model.tok_emb.weight.numel()
+    # Note: lm_head is tied to tok_emb, so it's only counted once by the loop
+    
+    # Calculate params for a single block
+    one_block = model.blocks[0]
+    block_params = sum(p.numel() for p in one_block.parameters())
+    all_blocks_params = block_params * cfg.n_layers
+    
+    print(f"\n--- Component Breakdown ---")
+    print(f"Embeddings (Tied):         {emb_params:,}")
+    print(f"Total for 24 Blocks:       {all_blocks_params:,}")
+    print(f"Per-Block Average:         {block_params:,}")
+    
+    diff = abs(total_params - 209_000_000)
+    if diff < 1_000_000:
+        print("\nVERIFICATION SUCCESS: Model matches the v5.0 Build Plan target.")
+    else:
+        print(f"\nNOTE: Model is at {total_params/1e6:.1f}M params. This is expected if 'd_model' or 'layers' were adjusted.")
+========================
+<<other/inference_chat.py>>
+import os
+import torch
+import torch.nn.functional as F
+from transformers import AutoTokenizer
+from model_architecture import CustomTransformer
+from config import SLMConfig
+
+# ── Load config & tokenizer ──────────────────────────────────────────────────
+cfg       = SLMConfig()
+tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer)
+
+# ── Load Best Model ──────────────────────────────────────────────────────────
+def load_best_model():
+    path = os.path.join(cfg.ckpt_dir, "best_model.pt")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"No checkpoint found at {path}")
+    
+    print(f"Loading checkpoint: {path}")
+
+    model = CustomTransformer(cfg)
+    model = model.to(torch.bfloat16)
+    ckpt  = torch.load(path, map_location="cpu", weights_only=False)
+    
+    state_dict = {k.replace("_orig_mod.", ""): v for k, v in ckpt["model"].items()}
+    model.load_state_dict(state_dict)
+    model.eval()
+    return model
+
+# ── Generation ───────────────────────────────────────────────────────────────
+@torch.no_grad()
+def generate(
+    model,
+    prompt: str,
+    max_new_tokens: int = 200,  # Increased default for chat
+    temperature: float  = 0.4,  
+    top_k: int          = 40,   
+    top_p: float        = 0.90, 
+    repetition_penalty: float = 1.2, 
+    device: str         = "cpu",
+):
+    model = model.to(device)
+    ids   = tokenizer.encode(prompt, add_special_tokens=False)
+    x     = torch.tensor([ids], dtype=torch.long, device=device)
+
+    for _ in range(max_new_tokens):
+        x_cond = x[:, -cfg.max_seq_len:]
+        logits = model(x_cond)
+        logits = logits[:, -1, :] # [1, vocab]
+
+        # ── Apply Repetition Penalty ──
+        if repetition_penalty > 1.0:
+            for tok in set(x[0].tolist()):
+                if logits[0, tok] < 0:
+                    logits[0, tok] *= repetition_penalty
+                else:
+                    logits[0, tok] /= repetition_penalty
+
+        # Apply Temperature
+        logits = logits / temperature
+
+        # Top-k
+        if top_k > 0:
+            top_k_vals = torch.topk(logits, top_k).values
+            logits[logits < top_k_vals[:, -1:]] = float("-inf")
+
+        # Top-p (nucleus)
+        if top_p < 1.0:
+            sorted_logits, sorted_idx = torch.sort(logits, descending=True)
+            cum_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+            sorted_idx_remove = cum_probs - F.softmax(sorted_logits, dim=-1) > top_p
+            sorted_logits[sorted_idx_remove] = float("-inf")
+            logits = torch.zeros_like(logits).scatter_(1, sorted_idx, sorted_logits)
+
+        probs     = F.softmax(logits, dim=-1)
+        next_tok  = torch.multinomial(probs, num_samples=1)
+
+        if next_tok.item() == tokenizer.eos_token_id:
+            break
+
+        x = torch.cat([x, next_tok], dim=1)
+
+    # Return only the newly generated tokens
+    output_ids = x[0, len(ids):].tolist()
+    return tokenizer.decode(output_ids, skip_special_tokens=True)
+
+
+# ── Interactive CLI Chatbot ──────────────────────────────────────────────────
+def chat_interface():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Initializing hardware: {device}\n")
+
+    try:
+        model = load_best_model()
+    except FileNotFoundError as e:
+        print(f"❌ Error: {e}")
+        return
+
+    print("\n" + "="*60)
+    print("🧠 Dual-Brain SLM Chat Interface Online")
+    print("Type 'exit' or 'quit' to terminate the session.")
+    print("Type 'clear' to reset the conversation memory.")
+    print("="*60 + "\n")
+
+    chat_history = ""
+
+    while True:
+        try:
+            # 1. Get user input
+            user_input = input("\nYou: ")
+            
+            # 2. Handle commands
+            command = user_input.strip().lower()
+            if command in ['exit', 'quit']:
+                print("Shutting down sequence initiated. Goodbye!")
+                break
+            elif command == 'clear':
+                chat_history = ""
+                print("--- Conversation memory wiped ---")
+                continue
+            elif not command:
+                continue
+
+            # 3. Format prompt with context history
+            prompt = f"{chat_history}User: {user_input}\nSLM: "
+
+            print("SLM: ", end="", flush=True)
+
+            # 4. Generate response
+            output = generate(
+                model, 
+                prompt,
+                max_new_tokens=250, 
+                device=device,
+            )
+            
+            # The generate function returns the decoded string (without the prompt)
+            print(output)
+            
+            # 5. Update history for the next turn
+            chat_history += f"User: {user_input}\nSLM: {output}\n"
+
+            # 6. Prevent history from blowing past the 4096 context window
+            # Roughly 3 chars per token, capping at ~8000 characters to be safe
+            if len(chat_history) > 8000:
+                # Keep the latter half of the conversation
+                chat_history = chat_history[-4000:]
+
+        except KeyboardInterrupt:
+            print("\nShutting down sequence initiated. Goodbye!")
+            break
+        except Exception as e:
+            print(f"\n❌ An error occurred during generation: {e}")
+
+if __name__ == "__main__":
+    chat_interface()
+========================
+<<other/data_pipeline.py>>
+"""
+Cosmopedia v2 Top-Off Pipeline
+------------------------------
+Target  : 1,608,000,000 tokens total (1.6B train + 8M val)
+"""
+
+import os
+import gc
+import random
+import json
+import numpy as np
+from tqdm import tqdm
+from transformers import AutoTokenizer
+from datasets import load_dataset
+from config import SLMConfig
+
+cfg = SLMConfig()
+
+OUT_DIR   = "data/cosmopedia"
+RAW_PATH  = os.path.join(OUT_DIR, "raw.bin")
+TRAIN_PATH = os.path.join(OUT_DIR, "train.bin")
+VAL_PATH   = os.path.join(OUT_DIR, "val.bin")
+
+TOTAL_TOKENS = 1_608_000_000
+TRAIN_TOKENS = 1_600_000_000
+VAL_TOKENS   =     8_000_000
+
+tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer)
+EOS       = tokenizer.eos_token_id
+
+PROGRESS_FILE = os.path.join(OUT_DIR, "progress.json")
+
+def save_progress(doc_offset, token_offset):
+    with open(PROGRESS_FILE, "w") as f:
+        json.dump({"doc_offset": doc_offset, "token_offset": token_offset}, f)
+
+def load_progress():
+    if not os.path.exists(PROGRESS_FILE):
+        return None, None
+    with open(PROGRESS_FILE) as f:
+        p = json.load(f)
+    if p.get("token_offset", 0) > 0:
+        return p["doc_offset"], p["token_offset"]
+    return None, None
+
+def collect_raw():
+    saved_doc, saved_tok = load_progress()
+
+    if saved_doc is not None:
+        print(f"\n  Resuming from doc {saved_doc:,}, token {saved_tok:,}")
+        doc_offset   = saved_doc
+        token_offset = saved_tok
+        mmap_mode    = "r+"
+        
+        # MAGIC TRICK: Instantly expand the file on disk to fit the new target
+        print(f"  Expanding raw.bin to fit {TOTAL_TOKENS:,} tokens...")
+        with open(RAW_PATH, "a") as f:
+            f.truncate(TOTAL_TOKENS * 2) 
+    else:
+        print(f"\n  Starting fresh.")
+        doc_offset   = 0
+        token_offset = 0
+        mmap_mode    = "w+"
+        save_progress(0, 0)
+
+    print(f"\n{'='*60}")
+    print(f"  [cosmopedia] NEW Target : {TOTAL_TOKENS:,} tokens -> {RAW_PATH}")
+    print(f"{'='*60}")
+
+    mmap     = np.memmap(RAW_PATH, dtype=np.uint16, mode=mmap_mode, shape=(TOTAL_TOKENS,))
+    offset   = token_offset
+    overflow = np.array([], dtype=np.uint16)
+    batch_num = 0
+
+    token_bar = tqdm(
+        total=TOTAL_TOKENS,
+        initial=offset,
+        desc="  [cosmopedia] tokens",
+        unit="tok",
+        position=0,
+        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
+    )
+
+    ds = load_dataset(
+        "HuggingFaceTB/smollm-corpus",
+        name="cosmopedia-v2",
+        split="train",
+        streaming=True,
+        token=cfg.hf_token
+    )
+
+    buffer_ms  = []
+    buffer_col = []
+    buffer_oth = []
+
+    TARGET_MS  = 800
+    TARGET_COL = 600
+    TARGET_OTH = 600
+
+    valid_docs_seen = 0
+
+    for row in ds:
+        if offset >= TOTAL_TOKENS:
+            break
+
+        text = row.get("text", "")
+        if not (100 <= len(text) <= 50000):
+            continue
+            
+        if valid_docs_seen < doc_offset:
+            valid_docs_seen += 1
+            continue
+
+        doc_offset += 1
+        valid_docs_seen += 1
+
+        audience = str(row.get("audience", "other")).lower()
+        
+        if "middle_school" in audience:
+            if len(buffer_ms) < TARGET_MS: buffer_ms.append(text)
+        elif "college" in audience:
+            if len(buffer_col) < TARGET_COL: buffer_col.append(text)
+        else:
+            if len(buffer_oth) < TARGET_OTH: buffer_oth.append(text)
+
+        if len(buffer_ms) == TARGET_MS and len(buffer_col) == TARGET_COL and len(buffer_oth) == TARGET_OTH:
+            combined_texts = buffer_ms + buffer_col + buffer_oth
+            random.shuffle(combined_texts)
+            
+            buffer_ms.clear()
+            buffer_col.clear()
+            buffer_oth.clear()
+            
+            batch_num += 1
+
+            encoded = tokenizer(
+                combined_texts, add_special_tokens=False, return_attention_mask=False
+            )["input_ids"]
+
+            flat = [tok for seq in encoded for tok in seq + [EOS]]
+            batch_tokens = np.array(flat, dtype=np.uint16)
+            combined   = np.concatenate([overflow, batch_tokens])
+
+            n_complete = len(combined) // cfg.max_seq_len
+            write_len  = n_complete * cfg.max_seq_len
+
+            written_this_batch = 0
+            if write_len > 0:
+                tokens_to_write    = min(write_len, TOTAL_TOKENS - offset)
+                mmap[offset : offset + tokens_to_write] = combined[:tokens_to_write]
+                mmap.flush()
+                offset             += tokens_to_write
+                written_this_batch  = tokens_to_write
+                token_bar.update(tokens_to_write)
+
+            overflow = combined[write_len:].copy()
+            save_progress(doc_offset, offset)
+            
+            tqdm.write(f"  batch {batch_num:>5} | total: {offset:>13,} / {TOTAL_TOKENS:,} tok")
+            gc.collect()
+
+    token_bar.close()
+    del mmap, overflow
+    gc.collect()
+    return offset
+
+def split_raw(real_tokens):
+    print(f"\n  Splitting tokens → {TRAIN_TOKENS:,} train / {VAL_TOKENS:,} val")
+    train_tokens = TRAIN_TOKENS
+    val_tokens   = min(VAL_TOKENS, real_tokens - train_tokens)
+
+    raw   = np.memmap(RAW_PATH,   dtype=np.uint16, mode="r")
+    train = np.memmap(TRAIN_PATH, dtype=np.uint16, mode="w+", shape=(train_tokens,))
+    val   = np.memmap(VAL_PATH,   dtype=np.uint16, mode="w+", shape=(val_tokens,))
+
+    CHUNK = 10_000_000
+    for i in tqdm(range(0, train_tokens, CHUNK), desc="  Writing train"):
+        train[i:min(i + CHUNK, train_tokens)] = raw[i:min(i + CHUNK, train_tokens)]
+    train.flush()
+
+    for i in tqdm(range(0, val_tokens, CHUNK), desc="  Writing val"):
+        val[i:min(i + CHUNK, val_tokens)] = raw[train_tokens + i : train_tokens + min(i + CHUNK, val_tokens)]
+    val.flush()
+    del raw, train, val
+    gc.collect()
+
+if __name__ == "__main__":
+    real_tokens = collect_raw()
+    if real_tokens >= TOTAL_TOKENS:
+        split_raw(real_tokens)
+        print(f"\n  ✅ Cosmopedia topped off to 1.608B!")
+========================
+<<other/check_data.py>>
+import numpy as np
+
+def about_data(file_path):
+    data = np.memmap(file_path, dtype=np.uint16, mode='r')
+    print(f"File size      : {len(data):,} tokens")
+
+    CHUNK = 10_000_000
+    last_real = 0
+    for i in range(0, len(data), CHUNK):
+        chunk = data[i:i+CHUNK]
+        nonzero = np.nonzero(chunk)[0]
+        if len(nonzero) > 0:
+            last_real = i + nonzero[-1] + 1
+        else:
+            break  # hit the zero region
+
+    print(f"Real tokens    : {last_real:,}")
+    print(f"Zero padding   : {len(data) - last_real:,}")
+    print(f"Real data size : {last_real * 2 / 1e6:.1f} MB")
+
+
+bins = [
+    '/home/prathamesh/Data-Science/SLM/data/cosmopedia/train.bin',
+    '/home/prathamesh/Data-Science/SLM/data/cosmopedia/val.bin',
+    '/home/prathamesh/Data-Science/SLM/data/dclm-edu/eq_3/train.bin',
+    '/home/prathamesh/Data-Science/SLM/data/dclm-edu/eq_3/val.bin',
+    '/home/prathamesh/Data-Science/SLM/data/dclm-edu/gt_eq_4/train.bin',
+    '/home/prathamesh/Data-Science/SLM/data/dclm-edu/gt_eq_4/val.bin',
+    '/home/prathamesh/Data-Science/SLM/data/dolmino/train.bin',
+    '/home/prathamesh/Data-Science/SLM/data/dolmino/val.bin',
+    '/home/prathamesh/Data-Science/SLM/data/openwebmath/train.bin',
+    '/home/prathamesh/Data-Science/SLM/data/openwebmath/val.bin',
+    '/home/prathamesh/Data-Science/SLM/data/pes2o/train.bin',
+    '/home/prathamesh/Data-Science/SLM/data/pes2o/val.bin',
+    '/home/prathamesh/Data-Science/SLM/data/stackexchange/train.bin',
+    '/home/prathamesh/Data-Science/SLM/data/stackexchange/val.bin',
+    '/home/prathamesh/Data-Science/SLM/data/master_train.bin',
+    '/home/prathamesh/Data-Science/SLM/data/master_val.bin',
+]
+
+for bin in bins:
+    print(f"{bin.split('/')[-3]} | {bin.split('/')[-2]} | {bin.split('/')[-1]}")
+    about_data(bin)
+    print("=" * 50)
+========================
+<<other/data_pipeline copy.py>>
+"""
+Cosmopedia v2 Data Pipeline
+------------------------------
+Source  : HuggingFaceTB/smollm-corpus (cosmopedia-v2)
+Target  : 1,206,000,000 tokens total (1.2B train + 6M val)
+Filter  : 40% middle school, 30% college, 30% other (interleaved)
+Output  : data/cosmopedia/raw.bin   (1,206M tokens)
+          data/cosmopedia/train.bin (1,200,000,000 tokens)
+          data/cosmopedia/val.bin   (    6,000,000 tokens)
+"""
+
+import os
+import gc
+import random
+import json
+import numpy as np
+from tqdm import tqdm
+from transformers import AutoTokenizer
+from datasets import load_dataset
+from config import SLMConfig
+
+cfg = SLMConfig()
+
+# == Paths ===================================================================
+OUT_DIR   = "data/cosmopedia"
+RAW_PATH  = os.path.join(OUT_DIR, "raw.bin")
+TRAIN_PATH = os.path.join(OUT_DIR, "train.bin")
+VAL_PATH   = os.path.join(OUT_DIR, "val.bin")
+os.makedirs(OUT_DIR, exist_ok=True)
+
+# == Targets =================================================================
+TOTAL_TOKENS = 1_206_000_000
+TRAIN_TOKENS = 1_200_000_000
+VAL_TOKENS   =     6_000_000
+
+# == Tokenizer ===============================================================
+tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer)
+EOS       = tokenizer.eos_token_id
+assert tokenizer.vocab_size == 32_000
+print(f"Tokenizer ready. eos_id={EOS}")
+
+# == Progress ================================================================
+PROGRESS_FILE = os.path.join(OUT_DIR, "progress.json")
+
+def save_progress(doc_offset, token_offset):
+    with open(PROGRESS_FILE, "w") as f:
+        json.dump({"doc_offset": doc_offset, "token_offset": token_offset}, f)
+
+def load_progress():
+    if not os.path.exists(PROGRESS_FILE):
+        return None, None
+    with open(PROGRESS_FILE) as f:
+        p = json.load(f)
+    if p.get("token_offset", 0) > 0:
+        return p["doc_offset"], p["token_offset"]
+    return None, None
+
+# == Collect raw.bin =========================================================
+def collect_raw():
+    saved_doc, saved_tok = load_progress()
+
+    if saved_doc is not None:
+        print(f"\n  Resuming from doc {saved_doc:,}, token {saved_tok:,}")
+        doc_offset   = saved_doc
+        token_offset = saved_tok
+        mmap_mode    = "r+"
+    else:
+        print(f"\n  Starting fresh.")
+        doc_offset   = 0
+        token_offset = 0
+        mmap_mode    = "w+"
+        save_progress(0, 0)
+
+    print(f"\n{'='*60}")
+    print(f"  [cosmopedia] Target : {TOTAL_TOKENS:,} tokens -> {RAW_PATH}")
+    print(f"  [cosmopedia] Ratios : 40% Middle School / 30% College / 30% Other")
+    print(f"{'='*60}")
+
+    mmap     = np.memmap(RAW_PATH, dtype=np.uint16, mode=mmap_mode, shape=(TOTAL_TOKENS,))
+    offset   = token_offset
+    overflow = np.array([], dtype=np.uint16)
+    batch_num = 0
+
+    token_bar = tqdm(
+        total=TOTAL_TOKENS,
+        initial=offset,
+        desc="  [cosmopedia] tokens",
+        unit="tok",
+        position=0,
+        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
+    )
+
+    print(f"  Establishing optimized HF stream...")
+    
+    # We use HF Datasets streaming. This completely bypasses DuckDB's HTTP 429 issues.
+    ds = load_dataset(
+        "HuggingFaceTB/smollm-corpus",
+        name="cosmopedia-v2",
+        split="train",
+        streaming=True,
+        token=cfg.hf_token
+    )
+
+    buffer_ms  = []
+    buffer_col = []
+    buffer_oth = []
+
+    TARGET_MS  = 800
+    TARGET_COL = 600
+    TARGET_OTH = 600
+
+    valid_docs_seen = 0
+
+    for row in ds:
+        if offset >= TOTAL_TOKENS:
+            break
+
+        text = row.get("text", "")
+        
+        # Apply the same length filter we had in DuckDB
+        if not (100 <= len(text) <= 50000):
+            continue
+            
+        # Fast-forward to where the script crashed last night
+        if valid_docs_seen < doc_offset:
+            valid_docs_seen += 1
+            continue
+
+        doc_offset += 1
+        valid_docs_seen += 1
+
+        audience = str(row.get("audience", "other")).lower()
+        
+        # Route texts into the proper ratio buckets
+        if "middle_school" in audience:
+            if len(buffer_ms) < TARGET_MS: buffer_ms.append(text)
+        elif "college" in audience:
+            if len(buffer_col) < TARGET_COL: buffer_col.append(text)
+        else:
+            if len(buffer_oth) < TARGET_OTH: buffer_oth.append(text)
+
+        # Only tokenize and write when we have a perfect 40/30/30 blend
+        if len(buffer_ms) == TARGET_MS and len(buffer_col) == TARGET_COL and len(buffer_oth) == TARGET_OTH:
+            combined_texts = buffer_ms + buffer_col + buffer_oth
+            random.shuffle(combined_texts)
+            
+            buffer_ms.clear()
+            buffer_col.clear()
+            buffer_oth.clear()
+            
+            batch_num += 1
+
+            encoded = tokenizer(
+                combined_texts,
+                add_special_tokens=False,
+                return_attention_mask=False,
+            )["input_ids"]
+            del combined_texts
+
+            flat = []
+            for seq in encoded:
+                flat.extend(seq)
+                flat.append(EOS)
+            del encoded
+
+            batch_tokens = np.array(flat, dtype=np.uint16)
+            del flat
+
+            combined   = np.concatenate([overflow, batch_tokens])
+            del batch_tokens
+
+            n_complete = len(combined) // cfg.max_seq_len
+            write_len  = n_complete * cfg.max_seq_len
+
+            written_this_batch = 0
+            if write_len > 0:
+                tokens_to_write    = min(write_len, TOTAL_TOKENS - offset)
+                mmap[offset : offset + tokens_to_write] = combined[:tokens_to_write]
+                mmap.flush()
+                offset             += tokens_to_write
+                written_this_batch  = tokens_to_write
+                token_bar.update(tokens_to_write)
+
+            overflow = combined[write_len:].copy()
+            del combined
+
+            save_progress(doc_offset, offset)
+
+            tqdm.write(
+                f"  batch {batch_num:>5} | "
+                f"doc_offset: {doc_offset:>8,} | "
+                f"written: {written_this_batch:>7,} tok | "
+                f"total: {offset:>13,} / {TOTAL_TOKENS:,} tok"
+            )
+
+            gc.collect()
+
+    token_bar.close()
+    del mmap
+    del overflow
+    gc.collect()
+    print(f"\n  [cosmopedia] raw collection complete. {offset:,} tokens -> {RAW_PATH}")
+    return offset
+
+# == Split raw.bin → train.bin + val.bin =====================================
+def split_raw(real_tokens):
+    print(f"\n{'='*60}")
+    print(f"  Splitting tokens → {TRAIN_TOKENS:,} train / {VAL_TOKENS:,} val")
+    print(f"{'='*60}")
+
+    train_tokens = TRAIN_TOKENS
+    val_tokens   = min(VAL_TOKENS, real_tokens - train_tokens)
+
+    print(f"  Train : {train_tokens:,} tokens -> {TRAIN_PATH}")
+    print(f"  Val   : {val_tokens:,}   tokens -> {VAL_PATH}")
+
+    raw   = np.memmap(RAW_PATH,   dtype=np.uint16, mode="r")
+    train = np.memmap(TRAIN_PATH, dtype=np.uint16, mode="w+", shape=(train_tokens,))
+    val   = np.memmap(VAL_PATH,   dtype=np.uint16, mode="w+", shape=(val_tokens,))
+
+    CHUNK = 10_000_000
+    for i in tqdm(range(0, train_tokens, CHUNK), desc="  Writing train"):
+        end = min(i + CHUNK, train_tokens)
+        train[i:end] = raw[i:end]
+    train.flush()
+
+    for i in tqdm(range(0, val_tokens, CHUNK), desc="  Writing val"):
+        end = min(i + CHUNK, val_tokens)
+        val[i:end] = raw[train_tokens + i : train_tokens + end]
+    val.flush()
+
+    del raw, train, val
+    gc.collect()
+
+    print(f"\n  ✓ Split complete.")
+    print(f"  train.bin : {train_tokens:,} tokens ({train_tokens*2/1e9:.3f} GB)")
+    print(f"  val.bin   : {val_tokens:,} tokens ({val_tokens*2/1e6:.1f} MB)")
+
+# == Sanity check ============================================================
+def sanity_check():
+    print(f"\n{'='*60}")
+    print(f"  Sanity Check")
+    print(f"{'='*60}")
+    for path, label in [(TRAIN_PATH, "train"), (VAL_PATH, "val")]:
+        data   = np.memmap(path, dtype=np.uint16, mode="r")
+        max_id = int(data.max())
+        status = "✓ valid" if max_id < 32_000 else "✗ INVALID"
+        decoded = tokenizer.decode(data[:32].tolist())
+        print(f"\n  [{label}]")
+        print(f"    Tokens      : {len(data):,}")
+        print(f"    Max token id: {max_id} ({status})")
+        print(f"    Decoded     : \"{decoded[:100]}\"")
+        del data
+
+# == Run =====================================================================
+if __name__ == "__main__":
+    real_tokens = collect_raw()
+    
+    # SAFETY GUARD: Only split if we hit the target
+    if real_tokens >= TOTAL_TOKENS:
+        split_raw(real_tokens)
+        sanity_check()
+        print(f"\n  ✅ Cosmopedia v2 pipeline complete.")
+        print(f"  Next: run PeS2o pipeline.")
+    else:
+        print(f"\n  ⏸ Collection paused or dataset exhausted early at {real_tokens:,} tokens.")
+========================
+<<other/aggregate_code.py>>
+import argparse
+from pathlib import Path
+
+def aggregate_python_files(root_folder: str, output_file: str):
+    root_path = Path(root_folder)
+    
+    # 1. Validate the directory
+    if not root_path.exists() or not root_path.is_dir():
+        print(f"❌ Error: The folder '{root_folder}' does not exist.")
+        return
+
+    # Folders we usually want to ignore to avoid bloating the text file
+    ignore_folders = {'.venv', 'venv', 'env', '__pycache__', '.git', '.tox'}
+
+    processed_count = 0
+
+    print(f"🔍 Scanning '{root_path.absolute()}' for Python files...")
+
+    # 2. Open the output file and start writing
+    with open(output_file, 'w', encoding='utf-8') as out_f:
+        
+        # rglob('*.py') recursively finds all .py files
+        for file_path in root_path.rglob('*.py'):
+            
+            # Skip files that are inside ignored directories
+            if any(ignored in file_path.parts for ignored in ignore_folders):
+                continue
+                
+            try:
+                # Get a clean relative path (e.g., folder/script.py instead of C:/.../folder/script.py)
+                try:
+                    display_path = file_path.relative_to(root_path)
+                except ValueError:
+                    display_path = file_path
+
+                # Read the actual code
+                with open(file_path, 'r', encoding='utf-8') as in_f:
+                    code = in_f.read()
+                
+                # Write to the text file in your exact requested format
+                out_f.write(f"{display_path}\n")
+                out_f.write(f"{code}\n")
+                out_f.write("=======================================\n\n")
+                
+                processed_count += 1
+                
+            except Exception as e:
+                print(f"⚠️ Skipping {file_path} due to error: {e}")
+
+    if processed_count > 0:
+        print(f"✅ Success! Compiled {processed_count} files into '{output_file}'.")
+    else:
+        print("🤷 No valid .py files were found in the specified directory.")
+
+if __name__ == "__main__":
+    # Set up command line arguments for easy use
+
+    root_folder = '/home/prathamesh/Data-Science/SLM/'
+    output = '/home/prathamesh/Data-Science/SLM/code.txt'
+
+    aggregate_python_files(root_folder, output)
+========================
+<<other/export_hf.py>>
+import torch
+import os
+from transformers import MistralConfig, MistralForCausalLM, AutoTokenizer
+from config import SLMConfig
+
+def convert_to_hf():
+    print("🚀 Loading Custom Dual-Brain SLM Checkpoint...")
+    cfg = SLMConfig()
+    
+    # 1. Define the equivalent Hugging Face Mistral Configuration
+    hf_config = MistralConfig(
+        vocab_size=cfg.vocab_size,
+        hidden_size=cfg.d_model,
+        intermediate_size=cfg.ffn_dim,
+        num_hidden_layers=cfg.n_layers,
+        num_attention_heads=cfg.n_heads,
+        num_key_value_heads=cfg.n_kv_heads,
+        rms_norm_eps=cfg.norm_eps,
+        max_position_embeddings=cfg.max_seq_len,
+        rope_theta=cfg.rope_theta,
+        tie_word_embeddings=True, # You tied lm_head to tok_emb!
+        architectures=["MistralForCausalLM"]
+    )
+    
+    # 2. Initialize an empty HF model
+    print("🏗️  Initializing Hugging Face Mistral Architecture...")
+    hf_model = MistralForCausalLM(hf_config)
+    
+    # 3. Load your trained weights
+    checkpoint_path = os.path.join(cfg.ckpt_dir, "best_model.pt")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    
+    # Remove '_orig_mod.' prefix if you used torch.compile
+    state_dict = {k.replace("_orig_mod.", ""): v for k, v in checkpoint["model"].items()}
+    
+    hf_state_dict = {}
+    
+    print("🔄 Mapping custom state dictionary to Hugging Face keys...")
+    # 4. Map the Base Weights
+    hf_state_dict["model.embed_tokens.weight"] = state_dict["tok_emb.weight"]
+    hf_state_dict["model.norm.weight"] = state_dict["norm.weight"]
+    hf_state_dict["lm_head.weight"] = state_dict["lm_head.weight"]
+    
+    # 5. Map the Transformer Blocks
+    for i in range(cfg.n_layers):
+        # Layer Norms
+        hf_state_dict[f"model.layers.{i}.input_layernorm.weight"] = state_dict[f"blocks.{i}.norm1.weight"]
+        hf_state_dict[f"model.layers.{i}.post_attention_layernorm.weight"] = state_dict[f"blocks.{i}.norm2.weight"]
+        
+        # Attention Projections
+        hf_state_dict[f"model.layers.{i}.self_attn.q_proj.weight"] = state_dict[f"blocks.{i}.attn.wq.weight"]
+        hf_state_dict[f"model.layers.{i}.self_attn.k_proj.weight"] = state_dict[f"blocks.{i}.attn.wk.weight"]
+        hf_state_dict[f"model.layers.{i}.self_attn.v_proj.weight"] = state_dict[f"blocks.{i}.attn.wv.weight"]
+        hf_state_dict[f"model.layers.{i}.self_attn.o_proj.weight"] = state_dict[f"blocks.{i}.attn.wo.weight"]
+        
+        # FFN (SwiGLU)
+        hf_state_dict[f"model.layers.{i}.mlp.gate_proj.weight"] = state_dict[f"blocks.{i}.ffn.gate.weight"]
+        hf_state_dict[f"model.layers.{i}.mlp.up_proj.weight"] = state_dict[f"blocks.{i}.ffn.up.weight"]
+        hf_state_dict[f"model.layers.{i}.mlp.down_proj.weight"] = state_dict[f"blocks.{i}.ffn.down.weight"]
+
+    # 6. Load the mapped weights into the HF model
+    # Note: strict=False is required here because standard Mistral doesn't use QK-Norm.
+    # The script will intentionally ignore your 'q_norm' and 'k_norm' weights.
+    hf_model.load_state_dict(hf_state_dict, strict=False)
+    hf_model.bfloat16() # Keep it in bfloat16 as trained
+    
+    # 7. Save the model and your Mistral tokenizer
+    out_dir = "dual-brain-slm-hf"
+    print(f"\n💾 Saving Hugging Face model and tokenizer to ./{out_dir}")
+    hf_model.save_pretrained(out_dir)
+    
+    tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer)
+    tokenizer.save_pretrained(out_dir)
+    print("✅ Done! Ready for llama.cpp compilation.")
+
+if __name__ == "__main__":
+    convert_to_hf()
+========================
+<<other/check_storage.py>>
+import shutil
+import os
+
+def check_storage():
+    print("=" * 50)
+    print("  Storage Check")
+    print("=" * 50)
+
+    # Overall disk usage
+    total, used, free = shutil.disk_usage("/")
+    print(f"\n  Disk (total) : {total / 1e9:.1f} GB")
+    print(f"  Disk (used)  : {used  / 1e9:.1f} GB")
+    print(f"  Disk (free)  : {free  / 1e9:.1f} GB")
+
+    # What the training run needs
+    print(f"\n  --- Training Run Requirements ---")
+    train_bin   = 4_000_000_000 * 2 / 1e9   # 4B tokens × 2 bytes
+    val_bin     = 20_000_000    * 2 / 1e9   # 20M tokens × 2 bytes
+    checkpoints = 5 * 400 / 1e3             # 5 checkpoints × ~400MB each
+    total_needed = train_bin + val_bin + checkpoints
+
+    print(f"  train.bin    : {train_bin:.1f} GB  (4B tokens × 2 bytes)")
+    print(f"  val.bin      :  {val_bin*1000:.0f} MB (20M tokens × 2 bytes)")
+    print(f"  checkpoints  : {checkpoints:.1f} GB  (5 × ~400MB)")
+    print(f"  ─────────────────────────────────")
+    print(f"  Total needed : {total_needed:.1f} GB")
+
+    # Verdict
+    print(f"\n  --- Verdict ---")
+    if free / 1e9 >= total_needed + 5:  # +5GB safety buffer
+        print(f"  ✅ Enough space. ({free/1e9:.1f}GB free, {total_needed:.1f}GB needed)")
+    else:
+        shortfall = total_needed + 5 - free / 1e9
+        print(f"  ❌ Not enough space. Need {shortfall:.1f} GB more.")
+
+    # Current SLM folder usage
+    slm_dir = os.path.dirname(os.path.abspath(__file__))
+    slm_size = sum(
+        os.path.getsize(os.path.join(dp, f))
+        for dp, _, files in os.walk(slm_dir)
+        for f in files
+    ) / 1e9
+    print(f"\n  SLM folder   : {slm_size:.2f} GB  ({slm_dir})")
+
+    # Existing .bin files
+    print(f"\n  --- Existing data files ---")
+    for fname in ["train.bin", "val.bin"]:
+        fpath = os.path.join(slm_dir, fname)
+        if os.path.exists(fpath):
+            size = os.path.getsize(fpath) / 1e9
+            print(f"  {fname:12} : {size:.2f} GB")
+        else:
+            print(f"  {fname:12} : not found")
+
+    # Checkpoints
+    ckpt_dir = os.path.join(slm_dir, "checkpoints")
+    if os.path.exists(ckpt_dir):
+        ckpts = sorted(os.listdir(ckpt_dir))
+        ckpt_size = sum(
+            os.path.getsize(os.path.join(ckpt_dir, f))
+            for f in ckpts
+        ) / 1e9
+        print(f"\n  Checkpoints  : {len(ckpts)} files, {ckpt_size:.2f} GB total")
+        for c in ckpts:
+            size = os.path.getsize(os.path.join(ckpt_dir, c)) / 1e6
+            print(f"    {c} : {size:.1f} MB")
+    else:
+        print(f"\n  Checkpoints  : none yet")
+
+    print(f"\n{'='*50}\n")
+
+if __name__ == "__main__":
+    check_storage()
+========================
+<<other/check_capacity.py>>
+import subprocess
+import os
+
+def check_hardware():
+    print("🔍 Scanning Pop!_OS Hardware for ML Training...\n")
+    print("-" * 50)
+    
+    # 1. Check GPU / VRAM
+    try:
+        # Calls nvidia-smi natively on Linux
+        nvidia_smi = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=name,memory.total,memory.free", "--format=csv,noheader"], 
+            encoding='utf-8'
+        ).strip().split('\n')
+        
+        for i, gpu in enumerate(nvidia_smi):
+            name, total_ram, free_ram = gpu.split(', ')
+            total_mb = int(total_ram.replace(' MiB', ''))
+            print(f"🖥️  GPU {i}: {name}")
+            print(f"📊 Total VRAM: {total_mb} MB")
+            
+            # MATH FOR MODEL SIZE:
+            # We reserve 20% of VRAM for batch size, context window, and system overhead.
+            usable_vram_mb = total_mb * 0.8
+            usable_vram_bytes = usable_vram_mb * 1024 * 1024
+            
+            # Rule of thumb for full training (fp16/bf16 + AdamW): ~18 bytes per parameter
+            max_params_full = usable_vram_bytes / 18
+            
+            # Rule of thumb for LoRA fine-tuning: ~6 bytes per parameter
+            max_params_lora = usable_vram_bytes / 6
+            
+            print(f"  -> Max Model Size (Full Pre-training): ~{max_params_full / 1e6:.0f} Million parameters")
+            print(f"  -> Max Model Size (LoRA Fine-tuning): ~{max_params_lora / 1e6:.0f} Million parameters\n")
+            
+    except FileNotFoundError:
+        print("❌ No NVIDIA GPU detected or nvidia-smi not installed.")
+        print("Training locally will rely on CPU, which is highly impractical for building an SLM from scratch.\n")
+
+    # 2. Check System RAM (Crucial for loading datasets)
+    try:
+        with open('/proc/meminfo', 'r') as f:
+            meminfo = f.readlines()
+        total_ram_kb = int([line for line in meminfo if 'MemTotal' in line][0].split()[1])
+        total_ram_gb = total_ram_kb / (1024 * 1024)
+        print(f"🧠 System RAM: {total_ram_gb:.1f} GB")
+        if total_ram_gb < 16:
+            print("  ⚠️ Warning: Less than 16GB RAM might bottleneck dataset tokenization.")
+        else:
+            print("  ✅ System RAM looks sufficient for data loading pipelines.\n")
+    except Exception:
+        print("Could not read system RAM.\n")
+        
+    print("-" * 50)
+
+if __name__ == "__main__":
+    check_hardware()
+========================
+<<other/inference_test.py>>
+import os
+import json
+import torch
+import torch.nn.functional as F
+from transformers import AutoTokenizer
+from model_architecture import CustomTransformer
+from config import SLMConfig
+
+# ── Load config & tokenizer ──────────────────────────────────────────────────
+cfg       = SLMConfig()
+tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer)
+
+# ── Load Best Model ──────────────────────────────────────────────────────────
+def load_best_model():
+    path = os.path.join(cfg.ckpt_dir, "best_model.pt")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"No checkpoint found at {path}")
+    
+    print(f"Loading checkpoint: {path}")
+
+    model = CustomTransformer(cfg)
+    model = model.to(torch.bfloat16)
+    ckpt  = torch.load(path, map_location="cpu", weights_only=False)
+    
+    state_dict = {k.replace("_orig_mod.", ""): v for k, v in ckpt["model"].items()}
+    model.load_state_dict(state_dict)
+    model.eval()
+    return model
+
+# ── Generation ───────────────────────────────────────────────────────────────
+@torch.no_grad()
+def generate(
+    model,
+    prompt: str,
+    max_new_tokens: int = 100,
+    temperature: float  = 0.4,  # Lowered from 0.7 to 0.4 for strict logic
+    top_k: int          = 40,   # Tightened from 50
+    top_p: float        = 0.90, # Tightened from 0.95
+    repetition_penalty: float = 1.2, # NEW: Penalize repeated tokens
+    device: str         = "cpu",
+):
+    model = model.to(device)
+    ids   = tokenizer.encode(prompt, add_special_tokens=False)
+    x     = torch.tensor([ids], dtype=torch.long, device=device)
+
+    for _ in range(max_new_tokens):
+        x_cond = x[:, -cfg.max_seq_len:]
+        logits = model(x_cond)
+        logits = logits[:, -1, :] # [1, vocab]
+
+        # ── Apply Repetition Penalty ──
+        if repetition_penalty > 1.0:
+            for tok in set(x[0].tolist()):
+                if logits[0, tok] < 0:
+                    logits[0, tok] *= repetition_penalty
+                else:
+                    logits[0, tok] /= repetition_penalty
+
+        # Apply Temperature
+        logits = logits / temperature
+
+        # Top-k
+        if top_k > 0:
+            top_k_vals = torch.topk(logits, top_k).values
+            logits[logits < top_k_vals[:, -1:]] = float("-inf")
+
+        # Top-p (nucleus)
+        if top_p < 1.0:
+            sorted_logits, sorted_idx = torch.sort(logits, descending=True)
+            cum_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+            sorted_idx_remove = cum_probs - F.softmax(sorted_logits, dim=-1) > top_p
+            sorted_logits[sorted_idx_remove] = float("-inf")
+            logits = torch.zeros_like(logits).scatter_(1, sorted_idx, sorted_logits)
+
+        probs     = F.softmax(logits, dim=-1)
+        next_tok  = torch.multinomial(probs, num_samples=1)
+
+        if next_tok.item() == tokenizer.eos_token_id:
+            break
+
+        x = torch.cat([x, next_tok], dim=1)
+
+    output_ids = x[0, len(ids):].tolist()
+    return tokenizer.decode(output_ids, skip_special_tokens=True)
+
+
+# ── Reasoning Benchmark Suite ────────────────────────────────────────────────
+REASONING_PROMPTS = [
+    # Basic Math
+    "If I have 5 apples and eat 2, how many apples do I have left?",
+    "Solve for x: 2x + 5 = 15. x = ",
+    "What is the square root of 64?",
+    "A train leaves New York at 3 PM traveling 60 mph. How far has it traveled by 5 PM?",
+    
+    # Logic & Deductive Reasoning
+    "All cats have tails. Fluffy is a cat. Does Fluffy have a tail?",
+    "If A is taller than B, and B is taller than C, who is the tallest?",
+    "Which is heavier: 1 pound of feathers or 1 pound of bricks?",
+    "If you drop a glass of water on the floor, what happens?",
+    
+    # Pattern Recognition
+    "What is the next number in the sequence: 2, 4, 6, 8, ",
+    "Complete the pattern: A, C, E, G, ",
+    
+    # Coding
+    "Write a Python function to calculate the factorial of a number.",
+    "def is_even(num):\n    \"\"\"Returns True if num is even, else False\"\"\"",
+    "Write a for loop in Python that prints numbers from 1 to 10.",
+    
+    # Common Sense & Knowledge
+    "If it is raining outside, what should I take with me to stay dry?",
+    "The capital of France is",
+    "List three primary colors.",
+    "Can a normal human jump over a two-story house?",
+    "If I put a glass of water in the freezer, what happens to the water?",
+    "Explain the theory of relativity in one simple sentence.",
+    "Translate 'Hello, how are you?' to Spanish."
+]
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Device: {device}\n")
+
+    model = load_best_model()
+    
+    results = []
+    output_file = "reasoning_results_v3.json"
+
+    print(f"Starting reasoning benchmark ({len(REASONING_PROMPTS)} prompts)...\n")
+    print("-" * 60)
+
+    for i, prompt in enumerate(REASONING_PROMPTS, 1):
+        print(f"Prompt {i}/{len(REASONING_PROMPTS)}: {prompt}")
+        
+        output = generate(
+            model, 
+            prompt,
+            max_new_tokens=100, 
+            # We are relying on the defaults set in the function definition now
+            device=device,
+        )
+        
+        print(f"SLM Output:\n{output}")
+        print("-" * 60)
+        
+        results.append({
+            "prompt": prompt,
+            "output": output
+        })
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=4)
+        
+    print(f"\n✅ Benchmark complete! Results saved to {output_file}")
+========================
+<<other/download.py>>
+from huggingface_hub import snapshot_download
+
+print("🚀 Starting PeS2o download (Grabbing all available Parquet chunks)...")
+
+snapshot_download(
+    repo_id="allenai/peS2o",
+    repo_type="dataset",
+    revision="refs/convert/parquet",
+    allow_patterns=["**/*.parquet", "*.parquet"], 
+    local_dir="data/pes2o_raw",
+    local_dir_use_symlinks=False
+)
+
+print("\n✅ Download complete! The files are in data/pes2o_raw/")
+========================
+<<other/__init__.py>>
+
+========================
+<<other/hardware_recon.py>>
+import torch
+import subprocess
+import shutil
+
+def run_recon():
+    print("="*60)
+    print("🔍 SYSTEM HARDWARE RECON")
+    print("="*60)
+
+    # 1. System RAM & Swap (Pop!_OS/Linux native)
+    print("\n🖥️  CPU SYSTEM MEMORY (RAM & SWAP)")
+    print("-" * 60)
+    if shutil.which("free"):
+        # Runs the standard Linux memory check
+        subprocess.run(["free", "-h"])
+    else:
+        print("Could not find 'free' command.")
+
+    # 2. GPU VRAM (The AI Limit)
+    print("\n🎮 GPU VIDEO MEMORY (VRAM)")
+    print("-" * 60)
+    if torch.cuda.is_available():
+        device_count = torch.cuda.device_count()
+        print(f"GPUs detected: {device_count}")
+        
+        for i in range(device_count):
+            props = torch.cuda.get_device_properties(i)
+            total_vram_gb = props.total_memory / (1024**3)
+            print(f"\nGPU [{i}]: {props.name}")
+            print(f"  Physical VRAM: {total_vram_gb:.2f} GB")
+            print(f"  Compute Capability: {props.major}.{props.minor}")
+            
+        print("\n📊 Current GPU Allocation (nvidia-smi):")
+        if shutil.which("nvidia-smi"):
+            subprocess.run([
+                "nvidia-smi", 
+                "--query-gpu=index,memory.total,memory.used,memory.free", 
+                "--format=csv"
+            ])
+    else:
+        print("❌ No CUDA GPU detected by PyTorch!")
+        
+    print("\n" + "="*60)
+    print("Recon Complete.")
+
+if __name__ == "__main__":
+    run_recon()
+========================
+<<other/check_latency.py>>
+import torch
+import time
+import os
+import torch.nn as nn
+import numpy as np
+
+# Simulation Parameters based on your 600M Model
+BATCH_SIZE = 2
+SEQ_LEN = 4096
+D_MODEL = 1024
+LAYERS = 36
+DTYPE = torch.bfloat16 
+
+device = torch.device("cuda")
+print(f"🚀 Hardware: {torch.cuda.get_device_name(0)}")
+print(f"📊 Testing Data Size: ~{(BATCH_SIZE * SEQ_LEN * D_MODEL * 2) / 1e6:.2f} MB per layer")
+
+# 1. TEST RECALCULATION (GPU MATH)
+def test_gpu_math():
+    layer = nn.Linear(D_MODEL, D_MODEL * 4).to(device).to(DTYPE)
+    x = torch.randn(BATCH_SIZE, SEQ_LEN, D_MODEL, device=device, dtype=DTYPE)
+    
+    torch.cuda.synchronize()
+    start = time.perf_counter()
+    
+    # Simulate re-running 36 layers
+    for _ in range(LAYERS):
+        _ = layer(x)
+        
+    torch.cuda.synchronize()
+    return (time.perf_counter() - start) * 1000 # ms
+
+# 2. TEST SSD OFFLOADING (I/O)
+def test_ssd_io():
+    # We use float32 for the CPU/SSD part because numpy doesn't support bfloat16
+    # This actually makes the SSD look slightly FASTER than it would be with bfloat16 
+    # because it doesn't have to handle specialized bit-conversion overhead.
+    data = torch.randn(LAYERS, BATCH_SIZE, SEQ_LEN, D_MODEL).numpy()
+    file_path = "vram_dump.bin"
+    
+    start = time.perf_counter()
+    
+    # Write to SSD
+    with open(file_path, "wb") as f:
+        f.write(data.tobytes())
+    
+    # Read back from SSD
+    with open(file_path, "rb") as f:
+        _ = f.read()
+        
+    duration = (time.perf_counter() - start) * 1000 # ms
+    if os.path.exists(file_path):
+        os.remove(file_path)
+    return duration
+
+print("\n--- Starting Latency Battle ---")
+gpu_time = test_gpu_math()
+print(f"⚡ GPU Recalculation (36 layers): {gpu_time:.2f} ms")
+
+ssd_time = test_ssd_io()
+print(f"💾 SSD Write/Read (36 layers):  {ssd_time:.2f} ms")
+
+print("\n--- Final Verdict ---")
+if gpu_time < ssd_time:
+    ratio = ssd_time / gpu_time
+    print(f"🏆 GPU RECALCULATION is {ratio:.1f}x FASTER than your SSD.")
+else:
+    ratio = gpu_time / ssd_time
+    print(f"🏆 SSD OFFLOADING is {ratio:.1f}x FASTER than recalculating.")
 ========================

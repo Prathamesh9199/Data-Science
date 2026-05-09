@@ -39,6 +39,7 @@ class SLMConfig:
     keep_ckpts:         int = 5                                             # Rolling window — delete oldest beyond this
     log_every:          int = 10                                            # Print + write CSV every N global steps
     ckpt_dir:           str = 'checkpoints'
+    sft_ckpt_dir:       str = 'sft_checkpoints'
     log_file:           str = 'training_log.csv'
 
     # Thermal management
